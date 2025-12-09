@@ -53,4 +53,4 @@ Ensure you have **Rust** installed. If not, open PowerShell and run:
 This project is distributed under the MIT License. See the LICENSE file for details.
 
 ---
-*Author: Matteo*
+*Author: Matteo842**
