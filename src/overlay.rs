@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetSystemMetrics,
     PeekMessageW, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes,
     SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST, LWA_ALPHA,
-    MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
+    MSG, PM_REMOVE, SM_CXSCREEN, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
     WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -96,7 +96,23 @@ pub fn hide() {
 }
 
 fn update_window(hwnd: HWND, settings: &Settings) {
-    let (width, height, _, _) = settings.size.dimensions();
+    let data = OVERLAY_DATA.lock();
+    let (default_width, height, font_large, font_small) = settings.size.dimensions();
+    
+    // Calculate width based on current FPS value
+    let fps_num_width = if data.current_fps >= 100.0 {
+        (font_large as f32 * 0.6 * 3.0) as i32
+    } else if data.current_fps >= 10.0 {
+        (font_large as f32 * 0.6 * 2.0) as i32
+    } else {
+        (font_large as f32 * 0.6) as i32
+    };
+    let fps_label_width = (font_small as f32 * 0.5 * 3.0) as i32;
+    let actual_width = 6 + fps_num_width + 4 + fps_label_width + 6;
+    let width = actual_width.min(default_width);
+    
+    drop(data);
+    
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     
     let (x, y) = match settings.position {
@@ -121,7 +137,23 @@ unsafe extern "system" fn overlay_wndproc(
             let hdc = BeginPaint(hwnd, &mut ps);
             
             let data = OVERLAY_DATA.lock();
-            let (width, height, font_large, font_small) = data.size.dimensions();
+            let (default_width, height, font_large, font_small) = data.size.dimensions();
+            
+            // Calculate actual width needed based on content
+            // FPS number width + "FPS" label + padding
+            let fps_text = format!("{:.0}", data.current_fps);
+            let fps_num_width = if data.current_fps >= 100.0 {
+                (font_large as f32 * 0.6 * 3.0) as i32  // 3 digits
+            } else if data.current_fps >= 10.0 {
+                (font_large as f32 * 0.6 * 2.0) as i32  // 2 digits
+            } else {
+                (font_large as f32 * 0.6) as i32  // 1 digit
+            };
+            let fps_label_width = (font_small as f32 * 0.5 * 3.0) as i32; // "FPS" = 3 chars
+            let actual_width = 6 + fps_num_width + 4 + fps_label_width + 6; // padding on both sides
+            
+            // Use calculated width or default, whichever is smaller (to avoid too wide)
+            let width = actual_width.min(default_width);
             
             // Background
             let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR));
@@ -147,7 +179,6 @@ unsafe extern "system" fn overlay_wndproc(
             );
             let old_font = SelectObject(hdc, font_fps);
             
-            let fps_text = format!("{:.0}", data.current_fps);
             let fps_wide: Vec<u16> = fps_text.encode_utf16().collect();
             let _ = TextOutW(hdc, 6, 2, &fps_wide);
             
@@ -168,12 +199,18 @@ unsafe extern "system" fn overlay_wndproc(
             let fps_label: Vec<u16> = "FPS".encode_utf16().collect();
             let _ = TextOutW(hdc, label_x, 4, &fps_label);
             
-            // 1% low
+            // 1% low - use larger font (font_small + 2 or 3)
             if data.show_1_percent_low {
-                SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0x888888));
+                let font_1low = CreateFontW(
+                    font_small + 2, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 0, 0,
+                    windows::core::w!("Segoe UI"),
+                );
+                SelectObject(hdc, font_1low);
+                SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0xAAAAAA)); // Lighter gray for better visibility
                 let low_text = format!("1%: {:.0}", data.one_percent_low);
                 let low_wide: Vec<u16> = low_text.encode_utf16().collect();
                 let _ = TextOutW(hdc, 6, font_large + 2, &low_wide);
+                let _ = DeleteObject(font_1low);
             }
             
             SelectObject(hdc, old_font);
