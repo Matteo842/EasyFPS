@@ -6,12 +6,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 /// Information about the current fullscreen application
-#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FullscreenApp {
-    pub hwnd: isize,
-    pub process_id: u32,
-    pub width: i32,
-    pub height: i32,
+     pub hwnd: isize,
+     pub process_id: u32,
+     pub width: i32,
+     pub height: i32,
 }
 
 /// Check if there's a fullscreen application running
@@ -122,6 +122,7 @@ fn get_primary_monitor_size() -> (i32, i32) {
 }
 
 /// Get the name of a process by its ID
+#[allow(dead_code)]
 pub fn get_process_name(process_id: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
