@@ -1,9 +1,11 @@
 use crate::settings::{FpsColor, OverlayPosition, OverlaySize, Settings};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::*;
+// Aggiungiamo l'import per il mouse
+use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 
 static GUI_OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -20,12 +22,31 @@ const ID_STARTUP: i32 = 109;
 const ID_SAVE: i32 = 110;
 const ID_CANCEL: i32 = 111;
 
+// Custom Title Bar IDs
+const ID_TITLE_BAR: i32 = 200;
+const ID_CLOSE_BTN: i32 = 201;
+
 // Button check states
 const BST_CHECKED_VAL: usize = 1;
+
+// Colors (BGR format per Windows)
+const COL_BLACK: u32 = 0x000000;
+const COL_DARK_GRAY: u32 = 0x2D2D2D; 
+const COL_RED: u32 = 0x0000FF;       
+const COL_WHITE: u32 = 0xFFFFFF;
+
+// Definiamo manualmente le costanti mancanti per sicurezza
+const SS_CENTER: u32 = 0x1;
+const SS_NOTIFY: u32 = 0x100;
+const SS_CENTERIMAGE: u32 = 0x200;
 
 thread_local! {
     static CURRENT_SETTINGS: std::cell::RefCell<Option<Settings>> = std::cell::RefCell::new(None);
     static SAVE_CALLBACK: std::cell::RefCell<Option<Box<dyn FnOnce(Settings) + Send>>> = std::cell::RefCell::new(None);
+    // Correzione: Usiamo std::ptr::null_mut() invece di 0
+    static BRUSH_BLACK: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
+    static BRUSH_DARK_GRAY: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
+    static BRUSH_RED: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
 }
 
 pub fn is_open() -> bool {
@@ -56,20 +77,33 @@ unsafe fn create_settings_window() {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(settings_wndproc),
-        hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+        hbrBackground: CreateSolidBrush(COLORREF(COL_BLACK)),
         lpszClassName: class_name,
         ..Default::default()
     };
     
     RegisterClassExW(&wc);
     
+    // Inizializza i pennelli
+    BRUSH_BLACK.with(|b| *b.borrow_mut() = CreateSolidBrush(COLORREF(COL_BLACK)));
+    BRUSH_DARK_GRAY.with(|b| *b.borrow_mut() = CreateSolidBrush(COLORREF(COL_DARK_GRAY)));
+    BRUSH_RED.with(|b| *b.borrow_mut() = CreateSolidBrush(COLORREF(COL_RED)));
+
+    // Calcolo posizione centrale schermo
+    let screen_w = GetSystemMetrics(SM_CXSCREEN);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let win_w = 360; 
+    let win_h = 320;
+    let pos_x = (screen_w - win_w) / 2;
+    let pos_y = (screen_h - win_h) / 2;
+
     let hwnd = CreateWindowExW(
         WS_EX_TOPMOST,
         class_name,
-        windows::core::w!("EasyFPS - Options"),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        320, 320,
+        windows::core::w!("EasyFPS"),
+        WS_POPUP | WS_VISIBLE | WS_BORDER, 
+        pos_x, pos_y,
+        win_w, win_h,
         None, None, None, None,
     );
     
@@ -83,6 +117,11 @@ unsafe fn create_settings_window() {
             DispatchMessageW(&msg);
         }
     }
+
+    // Pulizia pennelli alla chiusura
+    let _ = BRUSH_BLACK.with(|b| DeleteObject(*b.borrow()));
+    let _ = BRUSH_DARK_GRAY.with(|b| DeleteObject(*b.borrow()));
+    let _ = BRUSH_RED.with(|b| DeleteObject(*b.borrow()));
 }
 
 unsafe fn create_controls(hwnd: HWND) {
@@ -91,37 +130,62 @@ unsafe fn create_controls(hwnd: HWND) {
     let button_class = windows::core::w!("BUTTON");
     let static_class = windows::core::w!("STATIC");
     
-    // Title
-    create_label(hwnd, static_class, "Options EasyFPS", 10, 10, 280, 20);
-    
+    // --- CUSTOM TITLE BAR ---
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        static_class,
+        windows::core::w!("   EasyFPS - Options"), 
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_CENTERIMAGE),
+        0, 0, 360, 30, 
+        hwnd, HMENU(ID_TITLE_BAR as _), None, None,
+    );
+
+    // Pulsante X Rosso
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        static_class,
+        windows::core::w!("✕"),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_CENTER | SS_NOTIFY | SS_CENTERIMAGE),
+        360 - 30, 0, 30, 30, 
+        hwnd, HMENU(ID_CLOSE_BTN as _), None, None,
+    );
+
+    let offset_y = 35; 
+
     // Position
-    create_label(hwnd, static_class, "Position:", 10, 45, 80, 20);
-    create_radio(hwnd, button_class, "Right", ID_POS_RIGHT, 100, 45, 80, 20, 
+    create_label(hwnd, static_class, "Position:", 20, 10 + offset_y, 80, 20);
+    create_radio(hwnd, button_class, "Right", ID_POS_RIGHT, 110, 10 + offset_y, 80, 20, 
                  settings.position == OverlayPosition::TopRight, true);
-    create_radio(hwnd, button_class, "Left", ID_POS_LEFT, 190, 45, 80, 20,
+    create_radio(hwnd, button_class, "Left", ID_POS_LEFT, 200, 10 + offset_y, 80, 20,
                  settings.position == OverlayPosition::TopLeft, false);
     
     // Color
-    create_label(hwnd, static_class, "Color:", 10, 75, 80, 20);
-    create_radio(hwnd, button_class, "White", ID_COLOR_WHITE, 100, 75, 80, 20,
+    create_label(hwnd, static_class, "Color:", 20, 40 + offset_y, 80, 20);
+    create_radio(hwnd, button_class, "White", ID_COLOR_WHITE, 110, 40 + offset_y, 80, 20,
                  settings.fps_color == FpsColor::White, true);
-    create_radio(hwnd, button_class, "Green", ID_COLOR_GREEN, 190, 75, 80, 20,
+    create_radio(hwnd, button_class, "Green", ID_COLOR_GREEN, 200, 40 + offset_y, 80, 20,
                  settings.fps_color == FpsColor::Green, false);
     
-    // Size
-    create_label(hwnd, static_class, "Size:", 10, 105, 80, 20);
-    create_radio(hwnd, button_class, "Small", ID_SIZE_SMALL, 100, 105, 65, 20,
+    // Size (CORRETTO QUI)
+    create_label(hwnd, static_class, "Size:", 20, 70 + offset_y, 80, 20);
+    
+    // Small: invariato
+    create_radio(hwnd, button_class, "Small", ID_SIZE_SMALL, 110, 70 + offset_y, 65, 20,
                  settings.size == OverlaySize::Small, true);
-    create_radio(hwnd, button_class, "Medium", ID_SIZE_MEDIUM, 170, 105, 55, 20,
+                 
+    // Medium: Spostato leggermente e allargato (da 75 a 85px di larghezza)
+    create_radio(hwnd, button_class, "Medium", ID_SIZE_MEDIUM, 180, 70 + offset_y, 85, 20,
                  settings.size == OverlaySize::Medium, false);
-    create_radio(hwnd, button_class, "Large", ID_SIZE_LARGE, 230, 105, 65, 20,
+                 
+    // Large: Spostato più a destra (da 260 a 270) per non sovrapporsi a Medium
+    create_radio(hwnd, button_class, "Large", ID_SIZE_LARGE, 270, 70 + offset_y, 70, 20,
                  settings.size == OverlaySize::Large, false);
     
     // Checkboxes
-    create_checkbox(hwnd, button_class, "Show 1% Low FPS", ID_SHOW_1LOW, 10, 145, 200, 20,
-                    settings.show_1_percent_low);
-    create_checkbox(hwnd, button_class, "Start with Windows", ID_STARTUP, 10, 175, 200, 20,
-                    settings.start_with_windows);
+    create_checkbox(hwnd, button_class, "Show 1% Low FPS", ID_SHOW_1LOW, 20, 110 + offset_y, 200, 20,
+                     settings.show_1_percent_low);
+    create_checkbox(hwnd, button_class, "Start with Windows", ID_STARTUP, 20, 140 + offset_y, 200, 20,
+                     settings.start_with_windows);
     
     // Buttons
     let _ = CreateWindowExW(
@@ -129,7 +193,7 @@ unsafe fn create_controls(hwnd: HWND) {
         button_class,
         windows::core::w!("Save"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        70, 220, 80, 30,
+        80, 190 + offset_y, 90, 30,
         hwnd, HMENU(ID_SAVE as _), None, None,
     );
     
@@ -138,7 +202,7 @@ unsafe fn create_controls(hwnd: HWND) {
         button_class,
         windows::core::w!("Cancel"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        170, 220, 80, 30,
+        190, 190 + offset_y, 90, 30,
         hwnd, HMENU(ID_CANCEL as _), None, None,
     );
 }
@@ -249,14 +313,39 @@ unsafe extern "system" fn settings_wndproc(
             create_controls(hwnd);
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            let _ = ReleaseCapture(); // <--- Corretto con let _ =
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as _), LPARAM(0));
+            LRESULT(0)
+        }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+            let ctrl_id = GetDlgCtrlID(HWND(lparam.0 as _));
             let hdc = HDC(wparam.0 as _);
-            SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0xFFFFFF));
-            SetBkColor(hdc, windows::Win32::Foundation::COLORREF(0x000000));
-            LRESULT(GetStockObject(BLACK_BRUSH).0 as _)
+            
+            if ctrl_id == ID_CLOSE_BTN {
+                SetTextColor(hdc, COLORREF(COL_WHITE));
+                SetBkColor(hdc, COLORREF(COL_RED));
+                let brush = BRUSH_RED.with(|b| *b.borrow());
+                return LRESULT(brush.0 as _);
+            } else if ctrl_id == ID_TITLE_BAR {
+                SetTextColor(hdc, COLORREF(COL_WHITE));
+                SetBkColor(hdc, COLORREF(COL_DARK_GRAY));
+                let brush = BRUSH_DARK_GRAY.with(|b| *b.borrow());
+                return LRESULT(brush.0 as _);
+            } else {
+                SetTextColor(hdc, COLORREF(COL_WHITE));
+                SetBkColor(hdc, COLORREF(COL_BLACK));
+                let brush = BRUSH_BLACK.with(|b| *b.borrow());
+                return LRESULT(brush.0 as _);
+            }
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as i32;
+            if id == ID_CLOSE_BTN {
+                 let _ = DestroyWindow(hwnd);
+                 return LRESULT(0);
+            }
+
             match id {
                 ID_SAVE => {
                     save_settings(hwnd);

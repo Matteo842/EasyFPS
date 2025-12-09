@@ -17,6 +17,7 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_System_Diagnostics_Etw",
     "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse", # <--- NUOVA AGGIUNTA IMPORTANTE
 ]}
 
 # ETW for FPS capture
@@ -24,8 +25,6 @@ ferrisetw = "1.0"
 
 # System tray
 tray-icon = "0.19"
-
-# GUI - using native Windows API (no eframe needed)
 
 # Serialization for settings
 serde = { version = "1.0", features = ["derive"] }
