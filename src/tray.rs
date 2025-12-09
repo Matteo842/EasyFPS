@@ -4,25 +4,21 @@ use tray_icon::{
     Icon, MouseButton, MouseButtonState,
 };
 use std::time::Instant;
-use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Tray menu item IDs
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_EXIT: &str = "exit";
 
-/// Global tray icon (must stay on main thread)
 static mut TRAY_ICON: Option<TrayIcon> = None;
 
-/// Track last click for double-click detection
-static LAST_CLICK: once_cell::sync::Lazy<Mutex<Option<Instant>>> = 
-    once_cell::sync::Lazy::new(|| Mutex::new(None));
+// Store last click time as u64 millis since app start
+static LAST_CLICK_MS: AtomicU64 = AtomicU64::new(0);
+static APP_START: once_cell::sync::Lazy<Instant> = once_cell::sync::Lazy::new(|| Instant::now());
 
-/// Create a green icon for the tray (32x32 RGBA)
 fn create_green_icon() -> Icon {
     const SIZE: usize = 32;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
     
-    // Create a green circle with "F" letter
     for y in 0..SIZE {
         for x in 0..SIZE {
             let idx = (y * SIZE + x) * 4;
@@ -32,28 +28,20 @@ fn create_green_icon() -> Icon {
             let radius = SIZE as f32 / 2.0 - 2.0;
             
             if dist <= radius {
-                // Green circle (#39FF14)
-                rgba[idx] = 57;      // R
-                rgba[idx + 1] = 255; // G
-                rgba[idx + 2] = 20;  // B
-                rgba[idx + 3] = 255; // A
+                rgba[idx] = 57;
+                rgba[idx + 1] = 255;
+                rgba[idx + 2] = 20;
+                rgba[idx + 3] = 255;
                 
-                // Draw "F" in black
-                let in_f = (x >= 10 && x <= 13 && y >= 8 && y <= 24) || // Vertical bar
-                          (x >= 10 && x <= 22 && y >= 8 && y <= 11) ||  // Top horizontal
-                          (x >= 10 && x <= 19 && y >= 14 && y <= 17);   // Middle horizontal
+                let in_f = (x >= 10 && x <= 13 && y >= 8 && y <= 24) ||
+                          (x >= 10 && x <= 22 && y >= 8 && y <= 11) ||
+                          (x >= 10 && x <= 19 && y >= 14 && y <= 17);
                 
                 if in_f {
-                    rgba[idx] = 0;      // R
-                    rgba[idx + 1] = 0;  // G
-                    rgba[idx + 2] = 0;  // B
+                    rgba[idx] = 0;
+                    rgba[idx + 1] = 0;
+                    rgba[idx + 2] = 0;
                 }
-            } else {
-                // Transparent
-                rgba[idx] = 0;
-                rgba[idx + 1] = 0;
-                rgba[idx + 2] = 0;
-                rgba[idx + 3] = 0;
             }
         }
     }
@@ -61,63 +49,60 @@ fn create_green_icon() -> Icon {
     Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("Failed to create icon")
 }
 
-/// Initialize the system tray (must be called from main thread)
 pub fn init() -> Result<(), String> {
-    // Create menu
     let menu = Menu::new();
     
     let settings_item = MenuItem::with_id(MENU_SETTINGS, "Impostazioni", true, None);
     let exit_item = MenuItem::with_id(MENU_EXIT, "Esci", true, None);
     
-    menu.append(&settings_item).map_err(|e| format!("Failed to add menu item: {}", e))?;
-    menu.append(&exit_item).map_err(|e| format!("Failed to add menu item: {}", e))?;
+    menu.append(&settings_item).map_err(|e| format!("{}", e))?;
+    menu.append(&exit_item).map_err(|e| format!("{}", e))?;
     
-    // Create tray icon
     let icon = create_green_icon();
     
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("EasyFPS - Doppio click per impostazioni")
+        .with_tooltip("EasyFPS - Doppio click = Impostazioni")
         .with_icon(icon)
         .build()
-        .map_err(|e| format!("Failed to create tray icon: {}", e))?;
+        .map_err(|e| format!("{}", e))?;
     
-    // Store tray icon
     unsafe {
         TRAY_ICON = Some(tray_icon);
     }
     
+    // Initialize app start time
+    let _ = *APP_START;
+    
     Ok(())
 }
 
-/// Check for menu events (non-blocking)
 pub fn check_menu_event() -> Option<String> {
-    // Check menu events first (right-click menu)
+    // Menu events (right-click menu)
     if let Ok(event) = MenuEvent::receiver().try_recv() {
         return Some(event.id.0.clone());
     }
     
-    // Check tray icon click events for double-click detection
+    // Tray icon click events
     if let Ok(event) = TrayIconEvent::receiver().try_recv() {
-        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-            let now = Instant::now();
-            let mut last = LAST_CLICK.lock();
-            
-            if let Some(last_time) = *last {
-                // Check if double click (within 400ms)
-                if now.duration_since(last_time).as_millis() < 400 {
-                    *last = None;
+        match event {
+            TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
+                let now_ms = APP_START.elapsed().as_millis() as u64;
+                let last_ms = LAST_CLICK_MS.swap(now_ms, Ordering::SeqCst);
+                
+                // Double click if within 500ms
+                if now_ms.saturating_sub(last_ms) < 500 {
+                    LAST_CLICK_MS.store(0, Ordering::SeqCst); // Reset
                     return Some(MENU_SETTINGS.to_string());
                 }
             }
-            *last = Some(now);
+            _ => {}
         }
     }
     
     None
 }
 
-/// Shutdown the tray
 pub fn shutdown() {
     unsafe {
         TRAY_ICON = None;

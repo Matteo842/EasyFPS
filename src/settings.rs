@@ -36,11 +36,30 @@ impl FpsColor {
             FpsColor::Green => (57, 255, 20), // #39FF14
         }
     }
-    
-    /// Get egui color
-    pub fn to_egui_color(&self) -> eframe::egui::Color32 {
-        let (r, g, b) = self.to_rgb();
-        eframe::egui::Color32::from_rgb(r, g, b)
+}
+
+/// Overlay size
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OverlaySize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl Default for OverlaySize {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+impl OverlaySize {
+    /// Get dimensions (width, height, font_large, font_small)
+    pub fn dimensions(&self) -> (i32, i32, i32, i32) {
+        match self {
+            OverlaySize::Small => (75, 42, 20, 10),
+            OverlaySize::Medium => (95, 52, 26, 12),
+            OverlaySize::Large => (120, 65, 32, 14),
+        }
     }
 }
 
@@ -52,6 +71,9 @@ pub struct Settings {
     
     /// FPS text color
     pub fps_color: FpsColor,
+    
+    /// Overlay size
+    pub size: OverlaySize,
     
     /// Start with Windows
     pub start_with_windows: bool,
@@ -65,6 +87,7 @@ impl Default for Settings {
         Self {
             position: OverlayPosition::TopRight,
             fps_color: FpsColor::White,
+            size: OverlaySize::Medium,
             start_with_windows: false,
             show_1_percent_low: true,
         }
@@ -89,10 +112,10 @@ impl Settings {
                 Ok(content) => {
                     match serde_json::from_str(&content) {
                         Ok(settings) => return settings,
-                        Err(e) => eprintln!("Failed to parse settings: {}", e),
+                        Err(_) => {}
                     }
                 }
-                Err(e) => eprintln!("Failed to read settings file: {}", e),
+                Err(_) => {}
             }
         }
         
@@ -103,7 +126,6 @@ impl Settings {
     pub fn save(&self) -> Result<(), String> {
         let path = Self::config_path();
         
-        // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
@@ -127,7 +149,6 @@ impl Settings {
         let exe_path_str = exe_path.to_string_lossy();
         
         if self.start_with_windows {
-            // Add to registry
             let output = Command::new("reg")
                 .args([
                     "add",
@@ -144,7 +165,6 @@ impl Settings {
                 return Err("Failed to add registry entry".to_string());
             }
         } else {
-            // Remove from registry (ignore errors if not exists)
             let _ = Command::new("reg")
                 .args([
                     "delete",
@@ -158,4 +178,3 @@ impl Settings {
         Ok(())
     }
 }
-
