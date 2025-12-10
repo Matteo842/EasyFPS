@@ -1,10 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+
 use std::io::{Write, BufRead, BufReader};
 use std::process::{Command, Stdio, Child};
-use std::path::Path;
 use parking_lot::Mutex;
 
 // --- LOGGING ---
@@ -165,7 +164,7 @@ pub fn get_fps_for_process(process_id: u32) -> Option<FpsData> {
         set_target_process(process_id);
     }
     
-    let mut samples = STATE.ms_samples.lock();
+    let samples = STATE.ms_samples.lock();
     
     if samples.is_empty() {
         return Some(FpsData { fps: 0.0, one_percent_low: 0.0 });
