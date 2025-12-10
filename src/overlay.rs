@@ -123,7 +123,7 @@ fn calculate_dimensions(data: &OverlayData) -> (i32, i32, i32, i32) {
 
     let mut max_width = fps_total_width;
     let mut total_height = height;
-    let line_height = font_small + 4;
+
 
     // Check additional lines width
     // Use approximation: char width ~ font_large * 0.6
@@ -158,7 +158,7 @@ fn calculate_dimensions(data: &OverlayData) -> (i32, i32, i32, i32) {
 
 fn update_window(hwnd: HWND, settings: &Settings) {
     let data = OVERLAY_DATA.lock();
-    let (default_width, height, font_large, font_small) = settings.size.dimensions();
+    let (default_width, height, font_large, _font_small) = settings.size.dimensions();
     
     // Calculate width based on content
     let (base_w, _, _, _) = calculate_dimensions(&*data);
@@ -209,7 +209,7 @@ unsafe extern "system" fn overlay_wndproc(
             let data = OVERLAY_DATA.lock();
             let (default_width, height, font_large, font_small) = data.size.dimensions();
             
-            let (actual_width, total_height, fps_num_width, fps_label_width) = calculate_dimensions(&*data);
+            let (actual_width, total_height, _fps_num_width, _) = calculate_dimensions(&*data);
             
             // Use calculated width or default, whichever is smaller (to avoid too wide)
             let width = actual_width.min(default_width);
@@ -226,79 +226,69 @@ unsafe extern "system" fn overlay_wndproc(
             let _ = DeleteObject(pen);
             
             let _ = SetBkMode(hdc, TRANSPARENT);
+            
+            // Shared Drawing State
+            let mut current_y = 2; // Start with a small top padding
+            let line_height = font_large + 4; 
+            let label_color_ref = windows::Win32::Foundation::COLORREF(0xAAAAAA); // Light gray for labels
             let (r, g, b) = data.fps_color.to_rgb();
-            SetTextColor(hdc, windows::Win32::Foundation::COLORREF(
-                (b as u32) << 16 | (g as u32) << 8 | (r as u32)
-            ));
-            
-            // FPS number
-            let font_fps = CreateFontW(
-                font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
-                windows::core::w!("Segoe UI"),
+            let value_color_ref = windows::Win32::Foundation::COLORREF(
+                 (b as u32) << 16 | (g as u32) << 8 | (r as u32)
             );
-            let old_font = SelectObject(hdc, font_fps);
-            
-            let fps_text = format!("{:.0}", data.current_fps);
-            let fps_wide: Vec<u16> = fps_text.encode_utf16().collect();
-            let _ = TextOutW(hdc, 6, 2, &fps_wide);
-            
-            // "FPS" label
-            let font_label = CreateFontW(
-                font_small, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0,
-                windows::core::w!("Segoe UI"),
-            );
-            SelectObject(hdc, font_label);
-            
-            let label_x = 6 + fps_num_width + 4;
-            let fps_label: Vec<u16> = "FPS".encode_utf16().collect();
-            let _ = TextOutW(hdc, label_x, 4, &fps_label);
-            
-            // Lines Drawing State
-            let mut current_y = font_large + 2;
-            let line_height = font_large + 4; // Using Large font for lines
-            let label_color = 0xAAAAAA; // Lighter gray for labels
-            
-            // Helper for additional lines
-            let draw_line = |text: String, y: i32| {
-                // We use font_large for the stats now
-                let font_line = CreateFontW(
+
+            // Helper to draw a line: "Label  Value"
+            // Label is gray, Value is colored (white/green/whatever set in settings)
+            // Both use the same Large Font
+            let mut draw_stat_line = |label: &str, value: String, y: i32| {
+                let font = CreateFontW(
                     font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
                     windows::core::w!("Segoe UI"),
                 );
-                let old_font_loop = SelectObject(hdc, font_line);
+                let old_font_loop = SelectObject(hdc, font);
                 
-                SetTextColor(hdc, windows::Win32::Foundation::COLORREF(label_color));
-                let wide: Vec<u16> = text.encode_utf16().collect();
-                let _ = TextOutW(hdc, 6, y, &wide);
+                // Draw Label (Gray)
+                SetTextColor(hdc, label_color_ref);
+                let label_wide: Vec<u16> = format!("{}  ", label).encode_utf16().collect();
+                let _ = TextOutW(hdc, 6, y, &label_wide);
+                
+                // Calc label width to position value
+                let mut size = windows::Win32::Foundation::SIZE::default();
+                let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &label_wide, &mut size);
+                
+                // Draw Value (Colored)
+                SetTextColor(hdc, value_color_ref);
+                let value_wide: Vec<u16> = value.encode_utf16().collect();
+                let _ = TextOutW(hdc, 6 + size.cx, y, &value_wide);
                 
                 SelectObject(hdc, old_font_loop);
-                let _ = DeleteObject(font_line);
+                let _ = DeleteObject(font);
             };
+
+            // FPS
+            let fps_val = format!("{:.0}", data.current_fps);
+            draw_stat_line("FPS", fps_val, current_y);
+            current_y += line_height;
 
             // 1% low
             if data.show_1_percent_low {
-                let text = format!("1%: {:.0}", data.one_percent_low);
-                draw_line(text, current_y);
+                let val = format!("{:.0}", data.one_percent_low);
+                draw_stat_line("1%", val, current_y);
                 current_y += line_height;
             }
 
             // CPU
             if data.show_cpu_usage {
-                let text = format!("CPU: {:.0}%", data.cpu_usage);
-                draw_line(text, current_y);
+                let val = format!("{:.0}%", data.cpu_usage);
+                draw_stat_line("CPU", val, current_y);
                 current_y += line_height;
             }
 
             // GPU
             if data.show_gpu_usage {
-                let text = format!("GPU: {:.0}%", data.gpu_usage);
-                draw_line(text, current_y);
-                // current_y += line_height;
+                let val = format!("{:.0}%", data.gpu_usage);
+                draw_stat_line("GPU", val, current_y);
             }
             
-            SelectObject(hdc, old_font);
-            let _ = DeleteObject(font_fps);
-            let _ = DeleteObject(font_label);
             drop(data);
             
             let _ = EndPaint(hwnd, &ps);

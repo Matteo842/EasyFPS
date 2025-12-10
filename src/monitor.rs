@@ -9,6 +9,7 @@ pub struct SystemMonitor {
     pdh_query: isize,
     cpu_counter: isize,
     gpu_counter: isize,
+    counter_buffer: Vec<u8>,
 }
 
 unsafe impl Send for SystemMonitor {}
@@ -48,6 +49,7 @@ impl SystemMonitor {
             pdh_query,
             cpu_counter,
             gpu_counter,
+            counter_buffer: Vec::with_capacity(16384), // Pre-allocate 16KB
         }
     }
 
@@ -73,25 +75,30 @@ impl SystemMonitor {
                         PdhGetFormattedCounterArrayW, PDH_FMT_COUNTERVALUE_ITEM_W,
                     };
                     
-                    let mut buffer_size = 0;
+                    let mut required_size = 0;
                     let mut item_count = 0;
                     
+                    // First call to get size
                     let _ = PdhGetFormattedCounterArrayW(
                         self.gpu_counter,
                         PDH_FMT_DOUBLE,
-                        &mut buffer_size,
+                        &mut required_size,
                         &mut item_count,
                         None,
                     );
                     
-                    if buffer_size > 0 {
-                        let mut buffer = vec![0u8; buffer_size as usize];
-                        let items_ptr = buffer.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
+                    if required_size > 0 {
+                        // Resize buffer if needed
+                        if self.counter_buffer.len() < required_size as usize {
+                             self.counter_buffer.resize(required_size as usize, 0);
+                        }
+
+                        let items_ptr = self.counter_buffer.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
                         
                         if PdhGetFormattedCounterArrayW(
                             self.gpu_counter,
                             PDH_FMT_DOUBLE,
-                            &mut buffer_size,
+                            &mut required_size,
                             &mut item_count,
                             Some(items_ptr),
                         ) == 0 {
