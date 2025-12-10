@@ -65,7 +65,7 @@ pub fn show(fps: f64, one_percent_low: f64, settings: &Settings) {
     
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
     if hwnd_val != 0 {
-        let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+        let hwnd = HWND(hwnd_val as isize);
         
         if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
             OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
@@ -87,7 +87,7 @@ pub fn hide() {
         OVERLAY_VISIBLE.store(false, Ordering::SeqCst);
         let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
         if hwnd_val != 0 {
-            let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+            let hwnd = HWND(hwnd_val as isize);
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
@@ -236,7 +236,7 @@ fn run_overlay_window() -> Result<(), String> {
         let wc = WNDCLASSW {
             lpfnWndProc: Some(overlay_wndproc),
             lpszClassName: class_name,
-            hbrBackground: HBRUSH(std::ptr::null_mut()),
+            hbrBackground: HBRUSH(0),
             ..Default::default()
         };
         
@@ -249,7 +249,11 @@ fn run_overlay_window() -> Result<(), String> {
             WS_POPUP,
             0, 0, 100, 50,
             None, None, None, None,
-        ).map_err(|e| format!("CreateWindowExW failed: {}", e))?;
+        );
+        
+        if hwnd.0 == 0 {
+            return Err("CreateWindowExW failed".to_string());
+        }
         
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         
@@ -275,7 +279,7 @@ pub fn shutdown() {
     if hwnd_val != 0 {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(
-                HWND(hwnd_val as *mut std::ffi::c_void)
+                HWND(hwnd_val as isize)
             );
         }
         OVERLAY_HWND.store(0, Ordering::SeqCst);

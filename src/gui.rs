@@ -44,9 +44,9 @@ thread_local! {
     static CURRENT_SETTINGS: std::cell::RefCell<Option<Settings>> = std::cell::RefCell::new(None);
     static SAVE_CALLBACK: std::cell::RefCell<Option<Box<dyn FnOnce(Settings) + Send>>> = std::cell::RefCell::new(None);
     // Correzione: Usiamo std::ptr::null_mut() invece di 0
-    static BRUSH_BLACK: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
-    static BRUSH_DARK_GRAY: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
-    static BRUSH_RED: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(std::ptr::null_mut()));
+    static BRUSH_BLACK: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(0));
+    static BRUSH_DARK_GRAY: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(0));
+    static BRUSH_RED: std::cell::RefCell<HBRUSH> = std::cell::RefCell::new(HBRUSH(0));
 }
 
 pub fn is_open() -> bool {
@@ -107,7 +107,7 @@ unsafe fn create_settings_window() {
         None, None, None, None,
     );
     
-    if let Ok(hwnd) = hwnd {
+    if hwnd.0 != 0 {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
         
@@ -227,14 +227,16 @@ unsafe fn create_radio(hwnd: HWND, class: PCWSTR, text: &str, id: i32, x: i32, y
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_AUTORADIOBUTTON as u32)
     };
     
-    if let Ok(ctrl) = CreateWindowExW(
+    let ctrl = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         class,
         PCWSTR(text_wide.as_ptr()),
         style,
         x, y, w, h,
         hwnd, HMENU(id as _), None, None,
-    ) {
+    );
+
+    if ctrl.0 != 0 {
         if checked {
             SendMessageW(ctrl, BM_SETCHECK, WPARAM(BST_CHECKED_VAL), LPARAM(0));
         }
@@ -244,14 +246,16 @@ unsafe fn create_radio(hwnd: HWND, class: PCWSTR, text: &str, id: i32, x: i32, y
 unsafe fn create_checkbox(hwnd: HWND, class: PCWSTR, text: &str, id: i32, x: i32, y: i32, w: i32, h: i32, checked: bool) {
     let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     
-    if let Ok(ctrl) = CreateWindowExW(
+    let ctrl = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         class,
         PCWSTR(text_wide.as_ptr()),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
         x, y, w, h,
         hwnd, HMENU(id as _), None, None,
-    ) {
+    );
+
+    if ctrl.0 != 0 {
         if checked {
             SendMessageW(ctrl, BM_SETCHECK, WPARAM(BST_CHECKED_VAL), LPARAM(0));
         }
@@ -259,7 +263,8 @@ unsafe fn create_checkbox(hwnd: HWND, class: PCWSTR, text: &str, id: i32, x: i32
 }
 
 unsafe fn is_checked(hwnd: HWND, id: i32) -> bool {
-    if let Ok(ctrl) = GetDlgItem(hwnd, id) {
+    let ctrl = GetDlgItem(hwnd, id);
+    if ctrl.0 != 0 {
         SendMessageW(ctrl, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == BST_CHECKED_VAL as isize
     } else {
         false
@@ -319,7 +324,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-            let ctrl_id = GetDlgCtrlID(HWND(lparam.0 as _));
+            let ctrl_id = GetDlgCtrlID(HWND(lparam.0 as isize));
             let hdc = HDC(wparam.0 as _);
             
             if ctrl_id == ID_CLOSE_BTN {

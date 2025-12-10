@@ -18,7 +18,7 @@ pub struct FullscreenApp {
 pub fn get_fullscreen_app() -> Option<FullscreenApp> {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
+        if hwnd.0 == 0 {
             return None;
         }
 
