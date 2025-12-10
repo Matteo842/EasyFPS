@@ -4,6 +4,8 @@
 
 Unlike many overlays that inject code into game processes (risking detection by anti-cheat software), EasyFPS leverages **ETW (Event Tracing for Windows)** to monitor performance passively and securely, with near-zero impact on system resources.
 
+<img width="1280" height="720" alt="EasyFPS-commercial" src="https://github.com/user-attachments/assets/3549b555-7215-41cd-af95-3d1372ef3799" />
+
 ## 🚀 Features
 
 * **Extremely Lightweight:** Written in Rust and optimized for performance (`lto` enabled, stripped binary).
