@@ -3,6 +3,7 @@
 mod fps_capture;
 mod fullscreen;
 mod gui;
+mod monitor;
 mod overlay;
 mod settings;
 mod tray;
@@ -51,6 +52,10 @@ fn main() {
     // Clone settings for the callback
     let settings_for_callback = Arc::clone(&settings);
     
+    // Initialize System Monitor
+    let mut sys_monitor = monitor::SystemMonitor::new();
+    let mut last_stats_update = Instant::now();
+
     let mut last_update = Instant::now();
     
     // Main message loop
@@ -96,6 +101,12 @@ fn main() {
             
             let current_settings = settings.lock().clone();
             
+            // Update stats every 1 second
+            if last_stats_update.elapsed() >= Duration::from_millis(1000) {
+                sys_monitor.update();
+                last_stats_update = Instant::now();
+            }
+
             // Check for fullscreen app
             if let Some(app) = fullscreen::get_fullscreen_app() {
                 // Get FPS for the fullscreen app
@@ -107,8 +118,14 @@ fn main() {
                     None => (0.0, 0.0), // Se non abbiamo dati (ancora), mostriamo 0
                 };
                 
-                // Show overlay with FPS
-                overlay::show(fps, one_percent_low, &current_settings);
+                // Show overlay with FPS and Stats
+                overlay::show(
+                    fps, 
+                    one_percent_low, 
+                    sys_monitor.get_cpu_usage(), 
+                    sys_monitor.get_gpu_usage(), 
+                    &current_settings
+                );
             } else {
                 // No fullscreen app, hide overlay
                 overlay::hide();

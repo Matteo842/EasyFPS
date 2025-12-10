@@ -7,6 +7,7 @@ description = "A simple, lightweight FPS counter for fullscreen games"
 
 [dependencies]
 # Windows API (versione stabile)
+# Windows API (versione stabile)
 windows = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -19,10 +20,13 @@ windows = { version = "0.52", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_UI_Shell",
     "Win32_UI_Input_KeyboardAndMouse",
-]}
+    "Win32_System_Performance",
+] }
 
 # ETW for FPS capture - Aggiornato all'ultima versione
 ferrisetw = "1.2"
+
+
 
 # Gestione chiusura sicura
 ctrlc = "3.4"

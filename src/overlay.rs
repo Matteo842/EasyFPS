@@ -24,10 +24,14 @@ const BORDER_RADIUS: i32 = 6;
 struct OverlayData {
     current_fps: f64,
     one_percent_low: f64,
+    cpu_usage: f32,
+    gpu_usage: f32,
     position: OverlayPosition,
     fps_color: FpsColor,
     size: OverlaySize,
     show_1_percent_low: bool,
+    show_cpu_usage: bool,
+    show_gpu_usage: bool,
 }
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -36,10 +40,14 @@ static OVERLAY_DATA: once_cell::sync::Lazy<Mutex<OverlayData>> =
     once_cell::sync::Lazy::new(|| Mutex::new(OverlayData {
         current_fps: 0.0,
         one_percent_low: 0.0,
+        cpu_usage: 0.0,
+        gpu_usage: 0.0,
         position: OverlayPosition::TopRight,
         fps_color: FpsColor::White,
         size: OverlaySize::Medium,
         show_1_percent_low: true,
+        show_cpu_usage: false,
+        show_gpu_usage: false,
     }));
 
 pub fn init() -> Result<(), String> {
@@ -52,15 +60,19 @@ pub fn init() -> Result<(), String> {
     Ok(())
 }
 
-pub fn show(fps: f64, one_percent_low: f64, settings: &Settings) {
+pub fn show(fps: f64, one_percent_low: f64, cpu_usage: f32, gpu_usage: f32, settings: &Settings) {
     {
         let mut data = OVERLAY_DATA.lock();
         data.current_fps = fps;
         data.one_percent_low = one_percent_low;
+        data.cpu_usage = cpu_usage;
+        data.gpu_usage = gpu_usage;
         data.position = settings.position;
         data.fps_color = settings.fps_color;
         data.size = settings.size;
         data.show_1_percent_low = settings.show_1_percent_low;
+        data.show_cpu_usage = settings.show_cpu_usage;
+        data.show_gpu_usage = settings.show_gpu_usage;
     }
     
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
@@ -95,11 +107,10 @@ pub fn hide() {
     }
 }
 
-fn update_window(hwnd: HWND, settings: &Settings) {
-    let data = OVERLAY_DATA.lock();
-    let (default_width, height, font_large, font_small) = settings.size.dimensions();
+fn calculate_dimensions(data: &OverlayData) -> (i32, i32, i32, i32) {
+    let (_, height, font_large, font_small) = data.size.dimensions();
     
-    // Calculate width based on current FPS value
+    // FPS Width
     let fps_num_width = if data.current_fps >= 100.0 {
         (font_large as f32 * 0.6 * 3.0) as i32
     } else if data.current_fps >= 10.0 {
@@ -108,8 +119,67 @@ fn update_window(hwnd: HWND, settings: &Settings) {
         (font_large as f32 * 0.6) as i32
     };
     let fps_label_width = (font_small as f32 * 0.5 * 3.0) as i32;
-    let actual_width = 6 + fps_num_width + 4 + fps_label_width + 6;
-    let width = actual_width.min(default_width);
+    let fps_total_width = 6 + fps_num_width + 4 + fps_label_width + 6;
+
+    let mut max_width = fps_total_width;
+    let mut total_height = height;
+    let line_height = font_small + 4;
+
+    // Check additional lines width
+    // Use approximation: char width ~ font_large * 0.6
+    let estimate_width = |text_len: usize| -> i32 {
+        6 + (font_large as f32 * 0.6 * text_len as f32) as i32 + 6
+    };
+    
+    // Line height is now larger (font_large)
+    let line_height = font_large + 4;
+
+    if data.show_1_percent_low {
+        // "1%: 100" -> 7 chars approx
+        let w = estimate_width(8);
+        max_width = max_width.max(w);
+        total_height += line_height;
+    }
+    if data.show_cpu_usage {
+        // "CPU: 100%" -> 9 chars
+        let w = estimate_width(10);
+        max_width = max_width.max(w);
+        total_height += line_height;
+    }
+    if data.show_gpu_usage {
+        // "GPU: 100%" -> 9 chars
+        let w = estimate_width(10);
+        max_width = max_width.max(w);
+        total_height += line_height;
+    }
+
+    (max_width, total_height, fps_num_width, fps_label_width)
+}
+
+fn update_window(hwnd: HWND, settings: &Settings) {
+    let data = OVERLAY_DATA.lock();
+    let (default_width, height, font_large, font_small) = settings.size.dimensions();
+    
+    // Calculate width based on content
+    let (base_w, _, _, _) = calculate_dimensions(&*data);
+    let width = base_w.min(default_width);
+    
+    // Calculate height based on enabled lines
+    // Base height is for FPS line
+    let mut total_height = height; 
+    
+    // Additional lines use font_large + padding
+    let line_height = font_large + 4;
+    
+    if data.show_1_percent_low {
+        total_height += line_height;
+    }
+    if data.show_cpu_usage {
+        total_height += line_height;
+    }
+    if data.show_gpu_usage {
+        total_height += line_height;
+    }
     
     drop(data);
     
@@ -121,7 +191,7 @@ fn update_window(hwnd: HWND, settings: &Settings) {
     };
     
     unsafe {
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, total_height, SWP_NOACTIVATE);
     }
 }
 
@@ -139,18 +209,7 @@ unsafe extern "system" fn overlay_wndproc(
             let data = OVERLAY_DATA.lock();
             let (default_width, height, font_large, font_small) = data.size.dimensions();
             
-            // Calculate actual width needed based on content
-            // FPS number width + "FPS" label + padding
-            let fps_text = format!("{:.0}", data.current_fps);
-            let fps_num_width = if data.current_fps >= 100.0 {
-                (font_large as f32 * 0.6 * 3.0) as i32  // 3 digits
-            } else if data.current_fps >= 10.0 {
-                (font_large as f32 * 0.6 * 2.0) as i32  // 2 digits
-            } else {
-                (font_large as f32 * 0.6) as i32  // 1 digit
-            };
-            let fps_label_width = (font_small as f32 * 0.5 * 3.0) as i32; // "FPS" = 3 chars
-            let actual_width = 6 + fps_num_width + 4 + fps_label_width + 6; // padding on both sides
+            let (actual_width, total_height, fps_num_width, fps_label_width) = calculate_dimensions(&*data);
             
             // Use calculated width or default, whichever is smaller (to avoid too wide)
             let width = actual_width.min(default_width);
@@ -160,7 +219,7 @@ unsafe extern "system" fn overlay_wndproc(
             let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR));
             let old_brush = SelectObject(hdc, brush);
             let old_pen = SelectObject(hdc, pen);
-            let _ = RoundRect(hdc, 0, 0, width, height, BORDER_RADIUS, BORDER_RADIUS);
+            let _ = RoundRect(hdc, 0, 0, width, total_height, BORDER_RADIUS, BORDER_RADIUS);
             SelectObject(hdc, old_brush);
             SelectObject(hdc, old_pen);
             let _ = DeleteObject(brush);
@@ -179,6 +238,7 @@ unsafe extern "system" fn overlay_wndproc(
             );
             let old_font = SelectObject(hdc, font_fps);
             
+            let fps_text = format!("{:.0}", data.current_fps);
             let fps_wide: Vec<u16> = fps_text.encode_utf16().collect();
             let _ = TextOutW(hdc, 6, 2, &fps_wide);
             
@@ -189,28 +249,51 @@ unsafe extern "system" fn overlay_wndproc(
             );
             SelectObject(hdc, font_label);
             
-            let label_x = if data.current_fps >= 100.0 { 
-                6 + (font_large as f32 * 1.8) as i32 
-            } else if data.current_fps >= 10.0 { 
-                6 + (font_large as f32 * 1.2) as i32 
-            } else { 
-                6 + (font_large as f32 * 0.7) as i32 
-            };
+            let label_x = 6 + fps_num_width + 4;
             let fps_label: Vec<u16> = "FPS".encode_utf16().collect();
             let _ = TextOutW(hdc, label_x, 4, &fps_label);
             
-            // 1% low - use larger font (font_small + 2 or 3)
-            if data.show_1_percent_low {
-                let font_1low = CreateFontW(
-                    font_small + 2, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 0, 0,
+            // Lines Drawing State
+            let mut current_y = font_large + 2;
+            let line_height = font_large + 4; // Using Large font for lines
+            let label_color = 0xAAAAAA; // Lighter gray for labels
+            
+            // Helper for additional lines
+            let draw_line = |text: String, y: i32| {
+                // We use font_large for the stats now
+                let font_line = CreateFontW(
+                    font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
                     windows::core::w!("Segoe UI"),
                 );
-                SelectObject(hdc, font_1low);
-                SetTextColor(hdc, windows::Win32::Foundation::COLORREF(0xAAAAAA)); // Lighter gray for better visibility
-                let low_text = format!("1%: {:.0}", data.one_percent_low);
-                let low_wide: Vec<u16> = low_text.encode_utf16().collect();
-                let _ = TextOutW(hdc, 6, font_large + 2, &low_wide);
-                let _ = DeleteObject(font_1low);
+                let old_font_loop = SelectObject(hdc, font_line);
+                
+                SetTextColor(hdc, windows::Win32::Foundation::COLORREF(label_color));
+                let wide: Vec<u16> = text.encode_utf16().collect();
+                let _ = TextOutW(hdc, 6, y, &wide);
+                
+                SelectObject(hdc, old_font_loop);
+                let _ = DeleteObject(font_line);
+            };
+
+            // 1% low
+            if data.show_1_percent_low {
+                let text = format!("1%: {:.0}", data.one_percent_low);
+                draw_line(text, current_y);
+                current_y += line_height;
+            }
+
+            // CPU
+            if data.show_cpu_usage {
+                let text = format!("CPU: {:.0}%", data.cpu_usage);
+                draw_line(text, current_y);
+                current_y += line_height;
+            }
+
+            // GPU
+            if data.show_gpu_usage {
+                let text = format!("GPU: {:.0}%", data.gpu_usage);
+                draw_line(text, current_y);
+                // current_y += line_height;
             }
             
             SelectObject(hdc, old_font);

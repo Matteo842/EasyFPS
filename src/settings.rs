@@ -80,6 +80,12 @@ pub struct Settings {
     
     /// Show 1% low FPS
     pub show_1_percent_low: bool,
+
+    /// Show CPU Usage
+    pub show_cpu_usage: bool,
+
+    /// Show GPU Usage
+    pub show_gpu_usage: bool,
 }
 
 impl Default for Settings {
@@ -90,6 +96,8 @@ impl Default for Settings {
             size: OverlaySize::Medium,
             start_with_windows: false,
             show_1_percent_low: true,
+            show_cpu_usage: false,
+            show_gpu_usage: false,
         }
     }
 }

@@ -19,6 +19,8 @@ const ID_SIZE_MEDIUM: i32 = 106;
 const ID_SIZE_LARGE: i32 = 107;
 const ID_SHOW_1LOW: i32 = 108;
 const ID_STARTUP: i32 = 109;
+const ID_SHOW_CPU: i32 = 112;
+const ID_SHOW_GPU: i32 = 113;
 const ID_SAVE: i32 = 110;
 const ID_CANCEL: i32 = 111;
 
@@ -93,7 +95,7 @@ unsafe fn create_settings_window() {
     let screen_w = GetSystemMetrics(SM_CXSCREEN);
     let screen_h = GetSystemMetrics(SM_CYSCREEN);
     let win_w = 360; 
-    let win_h = 320;
+    let win_h = 350; // Increased height
     let pos_x = (screen_w - win_w) / 2;
     let pos_y = (screen_h - win_h) / 2;
 
@@ -184,7 +186,11 @@ unsafe fn create_controls(hwnd: HWND) {
     // Checkboxes
     create_checkbox(hwnd, button_class, "Show 1% Low FPS", ID_SHOW_1LOW, 20, 110 + offset_y, 200, 20,
                      settings.show_1_percent_low);
-    create_checkbox(hwnd, button_class, "Start with Windows", ID_STARTUP, 20, 140 + offset_y, 200, 20,
+    create_checkbox(hwnd, button_class, "Show CPU Usage", ID_SHOW_CPU, 20, 140 + offset_y, 200, 20,
+                     settings.show_cpu_usage);
+    create_checkbox(hwnd, button_class, "Show GPU Usage", ID_SHOW_GPU, 20, 170 + offset_y, 200, 20,
+                     settings.show_gpu_usage);
+    create_checkbox(hwnd, button_class, "Start with Windows", ID_STARTUP, 20, 200 + offset_y, 200, 20,
                      settings.start_with_windows);
     
     // Buttons
@@ -193,7 +199,7 @@ unsafe fn create_controls(hwnd: HWND) {
         button_class,
         windows::core::w!("Save"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        80, 190 + offset_y, 90, 30,
+        80, 240 + offset_y, 90, 30, // Lowed y position
         hwnd, HMENU(ID_SAVE as _), None, None,
     );
     
@@ -202,7 +208,7 @@ unsafe fn create_controls(hwnd: HWND) {
         button_class,
         windows::core::w!("Cancel"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        190, 190 + offset_y, 90, 30,
+        190, 240 + offset_y, 90, 30, // Lowed y position
         hwnd, HMENU(ID_CANCEL as _), None, None,
     );
 }
@@ -295,6 +301,8 @@ unsafe fn save_settings(hwnd: HWND) {
     };
     
     settings.show_1_percent_low = is_checked(hwnd, ID_SHOW_1LOW);
+    settings.show_cpu_usage = is_checked(hwnd, ID_SHOW_CPU);
+    settings.show_gpu_usage = is_checked(hwnd, ID_SHOW_GPU);
     settings.start_with_windows = is_checked(hwnd, ID_STARTUP);
     
     let _ = settings.save();
