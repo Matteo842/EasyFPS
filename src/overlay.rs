@@ -207,7 +207,7 @@ unsafe extern "system" fn overlay_wndproc(
             let hdc = BeginPaint(hwnd, &mut ps);
             
             let data = OVERLAY_DATA.lock();
-            let (default_width, height, font_large, font_small) = data.size.dimensions();
+            let (default_width, _height, font_large, _font_small) = data.size.dimensions();
             
             let (actual_width, total_height, _fps_num_width, _) = calculate_dimensions(&*data);
             
@@ -239,7 +239,7 @@ unsafe extern "system" fn overlay_wndproc(
             // Helper to draw a line: "Label  Value"
             // Label is gray, Value is colored (white/green/whatever set in settings)
             // Both use the same Large Font
-            let mut draw_stat_line = |label: &str, value: String, y: i32| {
+            let draw_stat_line = |label: &str, value: String, y: i32| {
                 let font = CreateFontW(
                     font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
                     windows::core::w!("Segoe UI"),

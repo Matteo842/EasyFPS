@@ -103,7 +103,7 @@ fn main() {
             
             // Update stats every 1 second
             if last_stats_update.elapsed() >= Duration::from_millis(1000) {
-                sys_monitor.update();
+                sys_monitor.update(current_settings.show_cpu_usage, current_settings.show_gpu_usage);
                 last_stats_update = Instant::now();
             }
 
