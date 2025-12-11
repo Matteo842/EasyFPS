@@ -86,6 +86,9 @@ pub struct Settings {
 
     /// Show GPU Usage
     pub show_gpu_usage: bool,
+
+    /// Overlay Opacity (40-100)
+    pub overlay_opacity: u8,
 }
 
 impl Default for Settings {
@@ -98,6 +101,7 @@ impl Default for Settings {
             show_1_percent_low: true,
             show_cpu_usage: false,
             show_gpu_usage: false,
+            overlay_opacity: 90,
         }
     }
 }

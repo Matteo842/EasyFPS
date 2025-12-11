@@ -21,6 +21,7 @@ windows = { version = "0.52", features = [
     "Win32_UI_Shell",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Performance",
+    "Win32_UI_Controls",
 ] }
 
 # ETW for FPS capture - Aggiornato all'ultima versione

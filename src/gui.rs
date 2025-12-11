@@ -6,6 +6,16 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::*;
 // Aggiungiamo l'import per il mouse
 use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows::Win32::UI::Controls::{
+    InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_BAR_CLASSES,
+    TBS_AUTOTICKS, TBS_HORZ,
+};
+
+const WM_USER: u32 = 0x0400;
+const TBM_GETPOS: u32 = WM_USER;
+const TBM_SETPOS: u32 = WM_USER + 5;
+const TBM_SETRANGEMIN: u32 = WM_USER + 7;
+const TBM_SETRANGEMAX: u32 = WM_USER + 8;
 
 static GUI_OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -21,6 +31,8 @@ const ID_SHOW_1LOW: i32 = 108;
 const ID_STARTUP: i32 = 109;
 const ID_SHOW_CPU: i32 = 112;
 const ID_SHOW_GPU: i32 = 113;
+const ID_OPACITY_SLIDER: i32 = 114;
+const ID_OPACITY_VAL: i32 = 115;
 const ID_SAVE: i32 = 110;
 const ID_CANCEL: i32 = 111;
 
@@ -73,6 +85,12 @@ pub fn open(settings: Settings, on_save: impl FnOnce(Settings) + Send + 'static)
 }
 
 unsafe fn create_settings_window() {
+    let icc = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_BAR_CLASSES,
+    };
+    let _ = InitCommonControlsEx(&icc);
+
     let class_name = windows::core::w!("EasyFPS_Settings");
     
     let wc = WNDCLASSEXW {
@@ -95,7 +113,7 @@ unsafe fn create_settings_window() {
     let screen_w = GetSystemMetrics(SM_CXSCREEN);
     let screen_h = GetSystemMetrics(SM_CYSCREEN);
     let win_w = 360; 
-    let win_h = 350; // Increased height
+    let win_h = 400; // Increased height for Opacity Slider
     let pos_x = (screen_w - win_w) / 2;
     let pos_y = (screen_h - win_h) / 2;
 
@@ -193,13 +211,30 @@ unsafe fn create_controls(hwnd: HWND) {
     create_checkbox(hwnd, button_class, "Start with Windows", ID_STARTUP, 20, 200 + offset_y, 200, 20,
                      settings.start_with_windows);
     
+    // Opacity Slider
+    create_label(hwnd, static_class, "Opacity:", 20, 230 + offset_y, 60, 20);
+    // Range 40-100
+    create_trackbar(hwnd, ID_OPACITY_SLIDER, 90, 230 + offset_y, 200, 30, settings.overlay_opacity);
+    
+    // Opacity Value Label
+    let val_str = format!("{}%", settings.overlay_opacity);
+    let val_wide: Vec<u16> = val_str.encode_utf16().chain(std::iter::once(0)).collect();
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        static_class,
+        PCWSTR(val_wide.as_ptr()),
+        WS_CHILD | WS_VISIBLE,
+        300, 230 + offset_y, 40, 20,
+        hwnd, HMENU(ID_OPACITY_VAL as _), None, None,
+    );
+
     // Buttons
     let _ = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         button_class,
         windows::core::w!("Save"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        80, 240 + offset_y, 90, 30, // Lowed y position
+        80, 280 + offset_y, 90, 30, // Lowered y position
         hwnd, HMENU(ID_SAVE as _), None, None,
     );
     
@@ -208,7 +243,7 @@ unsafe fn create_controls(hwnd: HWND) {
         button_class,
         windows::core::w!("Cancel"),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-        190, 240 + offset_y, 90, 30, // Lowed y position
+        190, 280 + offset_y, 90, 30, // Lowered y position
         hwnd, HMENU(ID_CANCEL as _), None, None,
     );
 }
@@ -304,6 +339,7 @@ unsafe fn save_settings(hwnd: HWND) {
     settings.show_cpu_usage = is_checked(hwnd, ID_SHOW_CPU);
     settings.show_gpu_usage = is_checked(hwnd, ID_SHOW_GPU);
     settings.start_with_windows = is_checked(hwnd, ID_STARTUP);
+    settings.overlay_opacity = get_trackbar_pos(hwnd, ID_OPACITY_SLIDER);
     
     let _ = settings.save();
     let _ = settings.set_startup_registry();
@@ -371,10 +407,59 @@ unsafe extern "system" fn settings_wndproc(
             }
             LRESULT(0)
         }
+        WM_HSCROLL => {
+            if lparam.0 != 0 {
+                let ctrl_hwnd = HWND(lparam.0 as isize);
+                let ctrl_id = GetDlgCtrlID(ctrl_hwnd);
+                
+                if ctrl_id == ID_OPACITY_SLIDER {
+                     let pos = SendMessageW(ctrl_hwnd, TBM_GETPOS, WPARAM(0), LPARAM(0)).0;
+                     
+                     let val_str = format!("{}%", pos);
+                     let val_wide: Vec<u16> = val_str.encode_utf16().chain(std::iter::once(0)).collect();
+                     
+                     let label_hwnd = GetDlgItem(hwnd, ID_OPACITY_VAL);
+                     if label_hwnd.0 != 0 {
+                         let _ = SetWindowTextW(label_hwnd, PCWSTR(val_wide.as_ptr()));
+                     }
+                }
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn create_trackbar(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32, value: u8) {
+    let trackbar_class = windows::core::w!("msctls_trackbar32");
+    
+    let ctrl = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        trackbar_class,
+        windows::core::w!("Scale"),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(TBS_AUTOTICKS | TBS_HORZ),
+        x, y, w, h,
+        hwnd, HMENU(id as _), None, None,
+    );
+    
+    if ctrl.0 != 0 {
+        // Range 40-100
+        SendMessageW(ctrl, TBM_SETRANGEMIN, WPARAM(1), LPARAM(40));
+        SendMessageW(ctrl, TBM_SETRANGEMAX, WPARAM(1), LPARAM(100));
+        SendMessageW(ctrl, TBM_SETPOS, WPARAM(1), LPARAM(value as isize));
+    }
+}
+
+unsafe fn get_trackbar_pos(hwnd: HWND, id: i32) -> u8 {
+    let ctrl = GetDlgItem(hwnd, id);
+    if ctrl.0 != 0 {
+        let val = SendMessageW(ctrl, TBM_GETPOS, WPARAM(0), LPARAM(0)).0;
+        val as u8
+    } else {
+        100 // default
     }
 }

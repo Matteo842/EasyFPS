@@ -32,6 +32,7 @@ struct OverlayData {
     show_1_percent_low: bool,
     show_cpu_usage: bool,
     show_gpu_usage: bool,
+    overlay_opacity: u8,
 }
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -48,6 +49,7 @@ static OVERLAY_DATA: once_cell::sync::Lazy<Mutex<OverlayData>> =
         show_1_percent_low: true,
         show_cpu_usage: false,
         show_gpu_usage: false,
+        overlay_opacity: 90,
     }));
 
 pub fn init() -> Result<(), String> {
@@ -73,12 +75,18 @@ pub fn show(fps: f64, one_percent_low: f64, cpu_usage: f32, gpu_usage: f32, sett
         data.show_1_percent_low = settings.show_1_percent_low;
         data.show_cpu_usage = settings.show_cpu_usage;
         data.show_gpu_usage = settings.show_gpu_usage;
+        data.overlay_opacity = settings.overlay_opacity;
     }
     
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
     if hwnd_val != 0 {
         let hwnd = HWND(hwnd_val as isize);
         
+        // Apply Opacity
+        let alpha = (settings.overlay_opacity as f32 / 100.0 * 255.0) as u8;
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
+        }
         if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
             OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
             unsafe {
