@@ -2,7 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
-    IsWindowVisible, GWL_EXSTYLE, GWL_STYLE, WS_EX_TOOLWINDOW, WS_POPUP,
+    IsWindowVisible, GWL_EXSTYLE, GWL_STYLE, WS_EX_TOOLWINDOW,
 };
 
 /// Information about the current fullscreen application
@@ -81,29 +81,21 @@ pub fn get_fullscreen_app() -> Option<FullscreenApp> {
 }
 
 /// Check if a window is fullscreen
-fn is_window_fullscreen(_hwnd: HWND, rect: &RECT, screen_width: i32, screen_height: i32, style: u32) -> bool {
+fn is_window_fullscreen(_hwnd: HWND, rect: &RECT, screen_width: i32, screen_height: i32, _style: u32) -> bool {
     let window_width = rect.right - rect.left;
     let window_height = rect.bottom - rect.top;
 
-    // Method 1: Window covers or exceeds screen dimensions
+    // Robust Check: If the window is roughly the size of the screen (or bigger), it's fullscreen.
+    // We allow a margin of error (e.g. 30 pixels) for borders or weird scaling.
+    let width_diff = (window_width - screen_width).abs();
+    let height_diff = (window_height - screen_height).abs();
+
+    if width_diff < 30 && height_diff < 30 {
+        return true;
+    }
+
+    // Also check if it's BIGGER than screen (e.g. running at higher res DSR/VSR)
     if window_width >= screen_width && window_height >= screen_height {
-        // Additional check: window position should be at or near 0,0
-        if rect.left <= 0 && rect.top <= 0 {
-            return true;
-        }
-    }
-
-    // Method 2: Borderless fullscreen (popup style, covering screen)
-    if (style & WS_POPUP.0) != 0 {
-        if window_width >= screen_width - 10 && window_height >= screen_height - 10 {
-            return true;
-        }
-    }
-
-    // Method 3: Check if window is "exclusive fullscreen" style
-    // These windows typically have no border and exact screen size
-    let has_no_border = (style & 0x00C00000) == 0; // WS_CAPTION
-    if has_no_border && window_width == screen_width && window_height == screen_height {
         return true;
     }
 

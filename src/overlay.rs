@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetSystemMetrics,
     PeekMessageW, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes,
     SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST, LWA_ALPHA,
-    MSG, PM_REMOVE, SM_CXSCREEN, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
+    MSG, PM_REMOVE, SM_CXSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
     WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -199,7 +199,10 @@ fn update_window(hwnd: HWND, settings: &Settings) {
     };
     
     unsafe {
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, total_height, SWP_NOACTIVATE);
+        // Force Z-Order: Bring to top first
+        let _ = windows::Win32::UI::WindowsAndMessaging::BringWindowToTop(hwnd);
+        // SWP_SHOWWINDOW ensures it stays visible even if something tried to hide it
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, total_height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 }
 
