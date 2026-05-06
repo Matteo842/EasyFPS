@@ -6,8 +6,7 @@ authors = ["Matteo"]
 description = "A simple, lightweight FPS counter for fullscreen games"
 
 [dependencies]
-# Windows API (versione stabile)
-# Windows API (versione stabile)
+# Windows API
 windows = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -24,12 +23,8 @@ windows = { version = "0.52", features = [
     "Win32_UI_Controls",
 ] }
 
-# ETW for FPS capture - Aggiornato all'ultima versione
-ferrisetw = "1.2"
 
-
-
-# Gestione chiusura sicura
+# Graceful shutdown handler
 ctrlc = "3.4"
 
 # System tray

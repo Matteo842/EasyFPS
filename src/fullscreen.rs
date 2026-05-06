@@ -5,6 +5,49 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible, GWL_EXSTYLE, GWL_STYLE, WS_EX_TOOLWINDOW,
 };
 
+/// Well-known non-game processes that can appear fullscreen but should be ignored.
+/// All entries must be lowercase for case-insensitive comparison.
+const EXCLUDED_PROCESSES: &[&str] = &[
+    // Windows shell & system
+    "explorer.exe",
+    "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe",
+    "searchhost.exe",
+    "searchui.exe",
+    "systemsettings.exe",
+    "textinputhost.exe",
+    "lockapp.exe",
+    "logonui.exe",
+    "dwm.exe",
+    // UWP host (Settings, Store, Photos, etc.)
+    "applicationframehost.exe",
+    // Browsers
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "opera.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    // Media players
+    "vlc.exe",
+    "wmplayer.exe",
+    "mpc-hc64.exe",
+    "mpc-hc.exe",
+    // Editors / dev tools
+    "code.exe",
+    "devenv.exe",
+    "rider64.exe",
+    // Office
+    "winword.exe",
+    "excel.exe",
+    "powerpnt.exe",
+    // File managers
+    "totalcmd64.exe",
+    "totalcmd.exe",
+    // Task manager
+    "taskmgr.exe",
+];
+
 /// Information about the current fullscreen application
 #[allow(dead_code)]
 pub struct FullscreenApp {
@@ -71,6 +114,14 @@ pub fn get_fullscreen_app() -> Option<FullscreenApp> {
         let mut process_id: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut process_id));
 
+        // Exclude known non-game processes
+        if let Some(name) = get_process_name(process_id) {
+            let name_lower = name.to_lowercase();
+            if EXCLUDED_PROCESSES.iter().any(|&excluded| name_lower == excluded) {
+                return None;
+            }
+        }
+
         Some(FullscreenApp {
             hwnd: hwnd.0 as isize,
             process_id,
@@ -114,7 +165,6 @@ fn get_primary_monitor_size() -> (i32, i32) {
 }
 
 /// Get the name of a process by its ID
-#[allow(dead_code)]
 pub fn get_process_name(process_id: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;

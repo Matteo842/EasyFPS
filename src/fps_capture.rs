@@ -13,18 +13,26 @@ fn log_debug(msg: &str) {
         let _ = std::fs::create_dir_all(&path);
         path.push("debug.log");
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = writeln!(file, "[{}] {}", chrono_lite(), msg);
+            let _ = writeln!(file, "[{}] {}", format_timestamp(), msg);
         }
     }
 }
 
-fn chrono_lite() -> String {
-    let now = std::time::SystemTime::now();
-    let dur = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    format!("{}", dur.as_secs())
+/// Produce a human-readable timestamp without pulling in the `chrono` crate.
+/// Format: seconds since UNIX epoch (compact, monotonically increasing).
+fn format_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = dur.as_secs();
+    let hours = (total_secs / 3600) % 24;
+    let minutes = (total_secs / 60) % 60;
+    let seconds = total_secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
 
-// --- STRUTTURE DATI ---
+// --- DATA STRUCTURES ---
 const MAX_SAMPLES: usize = 2000;
 
 #[derive(Debug, Clone, Default)]
@@ -33,7 +41,7 @@ pub struct FpsData {
     pub one_percent_low: f64,
 }
 
-// Stato globale condiviso
+/// Shared global state
 struct FpsCaptureState {
     target_process_id: AtomicU32,
     ms_samples: Mutex<VecDeque<f64>>, // MsBetweenPresents
@@ -50,7 +58,7 @@ static STATE: once_cell::sync::Lazy<Arc<FpsCaptureState>> = once_cell::sync::Laz
     })
 });
 
-// --- API PUBBLICHE ---
+// --- PUBLIC API ---
 
 pub fn init() -> Result<(), String> {
     if STATE.is_running.load(Ordering::SeqCst) {
@@ -59,32 +67,29 @@ pub fn init() -> Result<(), String> {
     STATE.is_running.store(true, Ordering::SeqCst);
     log_debug("FPS capture init (PresentMon Mode)");
     
-    // Cerca PresentMon.exe in varie posizioni
+    // Search for PresentMon.exe in several locations
     if let Some(path) = detect_presentmon_path() {
         log_debug(&format!("PresentMon found at: {:?}", path));
-        // Salviamo il percorso trovato nello stato o usiamo una variabile globale/local statica se necessario
-        // Per semplicità, start_presentmon userà la stessa logica o salviamo il path in una static
-        let mut path_guard = PRESENTMON_PATH.lock();
-        *path_guard = Some(path);
+        *PRESENTMON_PATH.lock() = Some(path);
         Ok(())
     } else {
         log_debug("PresentMon.exe not found in CWD or executable dir!");
-        Err("PresentMon.exe non trovato. Assicurati che sia nella stessa cartella dell'eseguibile (o nella root del progetto).".to_string())
+        Err("PresentMon.exe not found. Make sure it is in the same folder as the executable (or in the project root).".to_string())
     }
 }
 
-// Global static path cache
+/// Cached path to the PresentMon binary
 static PRESENTMON_PATH: once_cell::sync::Lazy<Mutex<Option<std::path::PathBuf>>> = once_cell::sync::Lazy::new(|| {
     Mutex::new(None)
 });
 
-// EMBEDDED BINARY
+/// PresentMon binary embedded in the executable as a fallback
 const PRESENTMON_BIN: &[u8] = include_bytes!("../PresentMon.exe");
 
 fn detect_presentmon_path() -> Option<std::path::PathBuf> {
     let filename = "PresentMon.exe";
     
-    // 1. Controllo directory eseguibile (Priorità massima per override manuale)
+    // 1. Check executable directory (highest priority — manual override)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let p = parent.join(filename);
@@ -92,13 +97,13 @@ fn detect_presentmon_path() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 2. Controllo directory di lavoro corrente (CWD)
+    // 2. Check current working directory
     if let Ok(cwd) = std::env::current_dir() {
         let p = cwd.join(filename);
         if p.exists() { return Some(p); }
     }
     
-    // 3. Controllo directory genitore (utile per dev)
+    // 3. Walk up parent directories (useful during development)
     if let Ok(exe_path) = std::env::current_exe() {
         let mut current = exe_path.parent();
         for _ in 0..4 {
@@ -110,7 +115,7 @@ fn detect_presentmon_path() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 4. Estrazione binario integrato (Fallback portatile)
+    // 4. Extract embedded binary as fallback (portable mode)
     if let Some(path) = extract_embedded_presentmon() {
         return Some(path);
     }
@@ -129,8 +134,7 @@ fn extract_embedded_presentmon() -> Option<std::path::PathBuf> {
     
     temp_path.push("PresentMon_Internal.exe");
     
-    // Proviamo a scrivere il file. Se è in uso (es. istanza precedente bloccata),
-    // ignoriamo l'errore sperando che il file esistente sia valido.
+    // Try to write. If the file is locked (e.g. previous instance), we hope the existing copy is valid.
     match std::fs::write(&temp_path, PRESENTMON_BIN) {
         Ok(_) => log_debug("Embedded PresentMon extracted."),
         Err(e) => log_debug(&format!("Could not write embedded binary (might be in use): {}", e)),
@@ -159,7 +163,7 @@ pub fn set_target_process(pid: u32) {
 }
 
 pub fn get_fps_for_process(process_id: u32) -> Option<FpsData> {
-    // Assicurati che il processo target sia impostato
+    // Ensure the target process is set
     if STATE.target_process_id.load(Ordering::SeqCst) != process_id {
         set_target_process(process_id);
     }
@@ -170,8 +174,6 @@ pub fn get_fps_for_process(process_id: u32) -> Option<FpsData> {
         return Some(FpsData { fps: 0.0, one_percent_low: 0.0 });
     }
 
-    // Calcolo FPS (Media degli ultimi campioni)
-    // Usiamo una finestra mobile, es. ultimi 1000ms o max campioni
     let count = samples.len();
     let sum: f64 = samples.iter().sum();
     
@@ -179,18 +181,16 @@ pub fn get_fps_for_process(process_id: u32) -> Option<FpsData> {
         return Some(FpsData { fps: 0.0, one_percent_low: 0.0 });
     }
 
-    // Average Frame Time
+    // Average Frame Time → FPS
     let avg_ms = sum / count as f64;
     let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
 
-    // 1% Low
-    // Sort samples to find the 99th percentile (slowest frames)
+    // 1% Low: sort to find the 99th percentile (slowest frames)
     let mut sorted: Vec<f64> = samples.iter().cloned().collect();
-    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)); // Descending order (highest ms first)
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     
     let idx_1_percent = (count as f64 * 0.01).ceil() as usize;
-    // Prendi il valore all'1% peggiore
-    let low_ms = if count > 0 { sorted[idx_1_percent.min(count - 1)] } else { 0.0 };
+    let low_ms = sorted[idx_1_percent.min(count - 1)];
     let one_percent_low = if low_ms > 0.0 { 1000.0 / low_ms } else { 0.0 };
 
     Some(FpsData { fps, one_percent_low })
@@ -222,16 +222,10 @@ fn start_presentmon(pid: u32) {
         .unwrap_or(std::ffi::OsStr::new("PresentMon.exe"));
 
     let mut cmd = Command::new(pm_executable);
-    // Argomenti per PresentMon:
-    // -process_id <PID>
-    // -output_stdout : Scrive CSV su stdout
-    // -stop_existing_session : Ferma altre sessioni
-    // -timed 0 : durata infinita (default)
     cmd.arg("-process_id").arg(pid.to_string())
        .arg("-output_stdout")
        .arg("-stop_existing_session");
 
-    // Nascondi finestra console se possibile
     cmd.stdout(Stdio::piped());
     
     #[cfg(windows)]
@@ -248,10 +242,9 @@ fn start_presentmon(pid: u32) {
                     let reader = BufReader::new(stdout);
                     let mut lines = reader.lines();
                     
-                    // Cerca l'header per trovare l'indice della colonna "MsBetweenPresents"
+                    // Find the header to locate the "MsBetweenPresents" column index
                     let mut ms_idx = usize::MAX;
                     
-                    // Leggi finché non trovi l'header
                     while let Some(Ok(line)) = lines.next() {
                         if line.starts_with("Application") || line.contains("MsBetweenPresents") {
                             let cols: Vec<&str> = line.split(',').collect();
@@ -268,9 +261,8 @@ fn start_presentmon(pid: u32) {
                         return;
                     }
 
-                    // Leggi i dati
+                    // Read data lines
                     while let Some(Ok(line)) = lines.next() {
-                         // Controlla se dobbiamo fermarci
                          if !STATE.is_running.load(Ordering::SeqCst) {
                              break;
                          }

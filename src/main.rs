@@ -17,11 +17,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 fn main() {
-    // <<< NUOVO: Gestore di emergenza per Ctrl+C o chiusura terminale
-    // Questo impedisce che la sessione ETW rimanga attiva se il programma viene ucciso
+    // Emergency handler for Ctrl+C or terminal close.
+    // Ensures the ETW session is cleaned up if the program is killed.
     ctrlc::set_handler(move || {
-        // Non usiamo println! qui perché in modalità GUI non si vede, 
-        // ma puliamo le risorse critiche.
         fps_capture::shutdown();
         overlay::shutdown();
         tray::shutdown();
@@ -33,20 +31,20 @@ fn main() {
     
     // Initialize tray first (needs to be on main thread)
     if let Err(e) = tray::init() {
-        show_error_message(&format!("Errore inizializzazione tray: {}", e));
+        show_error_message(&format!("Tray initialization error: {}", e));
         return;
     }
     
     // Initialize overlay
     if let Err(e) = overlay::init() {
-        show_error_message(&format!("Errore inizializzazione overlay: {}", e));
+        show_error_message(&format!("Overlay initialization error: {}", e));
         return;
     }
     
     // Initialize FPS capture
     if let Err(e) = fps_capture::init() {
-        // Se fallisce (es. no admin), mostriamo errore ma proviamo a continuare
-        show_error_message(&format!("Errore inizializzazione FPS (Admin richiesto?): {}", e));
+        // If it fails (e.g. no admin), show error but try to continue
+        show_error_message(&format!("FPS initialization error (Admin required?): {}", e));
     }
     
     // Clone settings for the callback
@@ -63,7 +61,6 @@ fn main() {
         // Process Windows messages (required for tray icon to work)
         unsafe {
             let mut msg = MSG::default();
-            // PeekMessage non blocca, permette al loop di girare
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == windows::Win32::UI::WindowsAndMessaging::WM_QUIT {
                     break;
@@ -88,14 +85,13 @@ fn main() {
                     }
                 }
                 tray::MENU_EXIT => {
-                    // L'utente ha cliccato Exit, usciamo dal loop pulitamente
                     break; 
                 }
                 _ => {}
             }
         }
         
-        // Update overlay every ~16ms (circa 60 update al secondo per l'UI)
+        // Update overlay every ~16ms (~60 updates per second for smooth UI)
         if last_update.elapsed() >= Duration::from_millis(16) {
             last_update = Instant::now();
             
@@ -110,12 +106,11 @@ fn main() {
             // Check for fullscreen app
             if let Some(app) = fullscreen::get_fullscreen_app() {
                 // Get FPS for the fullscreen app
-                // Qui chiamiamo la funzione che abbiamo sistemato in fps_capture.rs
                 let fps_data = fps_capture::get_fps_for_process(app.process_id);
                 
                 let (fps, one_percent_low) = match fps_data {
                     Some(data) => (data.fps, data.one_percent_low),
-                    None => (0.0, 0.0), // Se non abbiamo dati (ancora), mostriamo 0
+                    None => (0.0, 0.0),
                 };
                 
                 // Show overlay with FPS and Stats
@@ -133,21 +128,19 @@ fn main() {
         }
         
         // Small sleep to prevent 100% CPU usage
-        // Importante: non dormire troppo o l'overlay lagga
         std::thread::sleep(Duration::from_millis(2)); 
     }
     
-    // <<< PULIZIA FINALE: Questa parte viene eseguita quando il loop finisce (Break)
-    fps_capture::shutdown(); // Spegni ETW
-    overlay::shutdown();     // Spegni Overlay DX11
-    tray::shutdown();        // Rimuovi icona
+    // Cleanup when loop ends
+    fps_capture::shutdown();
+    overlay::shutdown();
+    tray::shutdown();
 }
 
 fn show_error_message(message: &str) {
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONERROR};
     use windows::core::PCWSTR;
     
-    // Converti stringa Rust in stringa Wide (Windows Unicode)
     let msg: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
     let title: Vec<u16> = "EasyFPS Error".encode_utf16().chain(std::iter::once(0)).collect();
     

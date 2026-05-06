@@ -19,6 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const OVERLAY_MARGIN: i32 = 10;
 const BACKGROUND_COLOR: u32 = 0x1A1A1A;
 const BORDER_RADIUS: i32 = 6;
+/// Vertical padding at the top and bottom of the overlay
+const PADDING_TOP: i32 = 4;
+const PADDING_BOTTOM: i32 = 2;
 
 /// Overlay display data (thread-safe)
 struct OverlayData {
@@ -115,80 +118,62 @@ pub fn hide() {
     }
 }
 
-fn calculate_dimensions(data: &OverlayData) -> (i32, i32, i32, i32) {
-    let (_, height, font_large, font_small) = data.size.dimensions();
-    
-    // FPS Width
-    let fps_num_width = if data.current_fps >= 100.0 {
-        (font_large as f32 * 0.6 * 3.0) as i32
-    } else if data.current_fps >= 10.0 {
-        (font_large as f32 * 0.6 * 2.0) as i32
-    } else {
-        (font_large as f32 * 0.6) as i32
-    };
-    let fps_label_width = (font_small as f32 * 0.5 * 3.0) as i32;
-    let fps_total_width = 6 + fps_num_width + 4 + fps_label_width + 6;
+/// Counts how many lines will be displayed in the overlay.
+fn count_visible_lines(data: &OverlayData) -> i32 {
+    let mut lines = 1; // FPS is always shown
+    if data.show_1_percent_low { lines += 1; }
+    if data.show_cpu_usage { lines += 1; }
+    if data.show_gpu_usage { lines += 1; }
+    lines
+}
 
-    let mut max_width = fps_total_width;
-    let mut total_height = height;
-
-
-    // Check additional lines width
-    // Use approximation: char width ~ font_large * 0.6
-    let estimate_width = |text_len: usize| -> i32 {
-        6 + (font_large as f32 * 0.6 * text_len as f32) as i32 + 6
-    };
-    
-    // Line height is now larger (font_large)
+/// Calculates the dimensions the overlay needs based on the current data.
+/// Returns (width, height).
+fn calculate_dimensions(data: &OverlayData) -> (i32, i32) {
+    let (_default_width, _height, font_large, _font_small) = data.size.dimensions();
     let line_height = font_large + 4;
+    let num_lines = count_visible_lines(data);
+
+    // Width: estimate based on the widest possible content line
+    // Each character is roughly font_large * 0.6 wide
+    let char_w = (font_large as f32 * 0.6) as i32;
+    let h_pad = 12; // 6px left + 6px right
+
+    // FPS line: "FPS  " + up to 4-digit number → ~8 chars
+    let fps_digits = if data.current_fps >= 1000.0 { 4 }
+                     else if data.current_fps >= 100.0 { 3 }
+                     else if data.current_fps >= 10.0 { 2 }
+                     else { 1 };
+    let fps_w = h_pad + char_w * (4 + fps_digits); // "FPS " + space + digits
+
+    let mut max_width = fps_w;
 
     if data.show_1_percent_low {
-        // "1%: 100" -> 7 chars approx
-        let w = estimate_width(8);
+        let low_digits = if data.one_percent_low >= 1000.0 { 4 }
+                         else if data.one_percent_low >= 100.0 { 3 }
+                         else if data.one_percent_low >= 10.0 { 2 }
+                         else { 1 };
+        let w = h_pad + char_w * (3 + low_digits); // "1% " + digits
         max_width = max_width.max(w);
-        total_height += line_height;
     }
     if data.show_cpu_usage {
-        // "CPU: 100%" -> 9 chars
-        let w = estimate_width(10);
+        // "CPU  100%" → 9 chars
+        let w = h_pad + char_w * 9;
         max_width = max_width.max(w);
-        total_height += line_height;
     }
     if data.show_gpu_usage {
-        // "GPU: 100%" -> 9 chars
-        let w = estimate_width(10);
+        let w = h_pad + char_w * 9;
         max_width = max_width.max(w);
-        total_height += line_height;
     }
 
-    (max_width, total_height, fps_num_width, fps_label_width)
+    let total_height = PADDING_TOP + (line_height * num_lines) + PADDING_BOTTOM;
+
+    (max_width, total_height)
 }
 
 fn update_window(hwnd: HWND, settings: &Settings) {
     let data = OVERLAY_DATA.lock();
-    let (default_width, height, font_large, _font_small) = settings.size.dimensions();
-    
-    // Calculate width based on content
-    let (base_w, _, _, _) = calculate_dimensions(&*data);
-    let width = base_w.min(default_width);
-    
-    // Calculate height based on enabled lines
-    // Base height is for FPS line
-    let mut total_height = height; 
-    
-    // Additional lines use font_large + padding
-    let line_height = font_large + 4;
-    
-    if data.show_1_percent_low {
-        total_height += line_height;
-    }
-    if data.show_cpu_usage {
-        total_height += line_height;
-    }
-    if data.show_gpu_usage {
-        total_height += line_height;
-    }
-    
+    let (width, total_height) = calculate_dimensions(&*data);
     drop(data);
     
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
@@ -218,12 +203,8 @@ unsafe extern "system" fn overlay_wndproc(
             let hdc = BeginPaint(hwnd, &mut ps);
             
             let data = OVERLAY_DATA.lock();
-            let (default_width, _height, font_large, _font_small) = data.size.dimensions();
-            
-            let (actual_width, total_height, _fps_num_width, _) = calculate_dimensions(&*data);
-            
-            // Use calculated width or default, whichever is smaller (to avoid too wide)
-            let width = actual_width.min(default_width);
+            let (_default_width, _height, font_large, _font_small) = data.size.dimensions();
+            let (width, total_height) = calculate_dimensions(&*data);
             
             // Background
             let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR));
@@ -238,25 +219,26 @@ unsafe extern "system" fn overlay_wndproc(
             
             let _ = SetBkMode(hdc, TRANSPARENT);
             
-            // Shared Drawing State
-            let mut current_y = 2; // Start with a small top padding
-            let line_height = font_large + 4; 
+            // Create font ONCE for all lines (avoids repeated GDI alloc/free)
+            let font = CreateFontW(
+                font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
+                windows::core::w!("Segoe UI"),
+            );
+            let old_font = SelectObject(hdc, font);
+            
+            // Colors
+            let line_height = font_large + 4;
             let label_color_ref = windows::Win32::Foundation::COLORREF(0xAAAAAA); // Light gray for labels
             let (r, g, b) = data.fps_color.to_rgb();
             let value_color_ref = windows::Win32::Foundation::COLORREF(
                  (b as u32) << 16 | (g as u32) << 8 | (r as u32)
             );
 
+            let mut current_y = PADDING_TOP;
+
             // Helper to draw a line: "Label  Value"
-            // Label is gray, Value is colored (white/green/whatever set in settings)
-            // Both use the same Large Font
+            // Label is gray, Value is colored
             let draw_stat_line = |label: &str, value: String, y: i32| {
-                let font = CreateFontW(
-                    font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
-                    windows::core::w!("Segoe UI"),
-                );
-                let old_font_loop = SelectObject(hdc, font);
-                
                 // Draw Label (Gray)
                 SetTextColor(hdc, label_color_ref);
                 let label_wide: Vec<u16> = format!("{}  ", label).encode_utf16().collect();
@@ -270,9 +252,6 @@ unsafe extern "system" fn overlay_wndproc(
                 SetTextColor(hdc, value_color_ref);
                 let value_wide: Vec<u16> = value.encode_utf16().collect();
                 let _ = TextOutW(hdc, 6 + size.cx, y, &value_wide);
-                
-                SelectObject(hdc, old_font_loop);
-                let _ = DeleteObject(font);
             };
 
             // FPS
@@ -299,6 +278,10 @@ unsafe extern "system" fn overlay_wndproc(
                 let val = format!("{:.0}%", data.gpu_usage);
                 draw_stat_line("GPU", val, current_y);
             }
+            
+            // Restore and cleanup font (single deallocation)
+            SelectObject(hdc, old_font);
+            let _ = DeleteObject(font);
             
             drop(data);
             

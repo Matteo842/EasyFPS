@@ -3,13 +3,21 @@ use tray_icon::{
     TrayIcon, TrayIconBuilder, TrayIconEvent,
     Icon, MouseButton, MouseButtonState,
 };
+use parking_lot::Mutex;
 use std::time::Instant;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_EXIT: &str = "exit";
 
-static mut TRAY_ICON: Option<TrayIcon> = None;
+/// Wrapper to allow TrayIcon in static storage.
+/// Safety: TrayIcon is only ever created, accessed, and dropped on the main thread.
+struct TrayIconHolder(Option<TrayIcon>);
+unsafe impl Send for TrayIconHolder {}
+unsafe impl Sync for TrayIconHolder {}
+
+static TRAY_ICON: Mutex<TrayIconHolder> =
+    Mutex::new(TrayIconHolder(None));
 
 // Store last click time as u64 millis since app start
 static LAST_CLICK_MS: AtomicU64 = AtomicU64::new(0);
@@ -52,8 +60,8 @@ fn create_green_icon() -> Icon {
 pub fn init() -> Result<(), String> {
     let menu = Menu::new();
     
-    let settings_item = MenuItem::with_id(MENU_SETTINGS, "Impostazioni", true, None);
-    let exit_item = MenuItem::with_id(MENU_EXIT, "Esci", true, None);
+    let settings_item = MenuItem::with_id(MENU_SETTINGS, "Settings", true, None);
+    let exit_item = MenuItem::with_id(MENU_EXIT, "Exit", true, None);
     
     menu.append(&settings_item).map_err(|e| format!("{}", e))?;
     menu.append(&exit_item).map_err(|e| format!("{}", e))?;
@@ -62,14 +70,12 @@ pub fn init() -> Result<(), String> {
     
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("EasyFPS - Doppio click = Impostazioni")
+        .with_tooltip("EasyFPS - Double click = Settings")
         .with_icon(icon)
         .build()
         .map_err(|e| format!("{}", e))?;
     
-    unsafe {
-        TRAY_ICON = Some(tray_icon);
-    }
+    TRAY_ICON.lock().0 = Some(tray_icon);
     
     // Initialize app start time
     let _ = *APP_START;
@@ -104,7 +110,5 @@ pub fn check_menu_event() -> Option<String> {
 }
 
 pub fn shutdown() {
-    unsafe {
-        TRAY_ICON = None;
-    }
+    TRAY_ICON.lock().0 = None;
 }

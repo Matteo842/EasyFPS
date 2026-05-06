@@ -154,7 +154,7 @@ unsafe fn create_controls(hwnd: HWND) {
     let _ = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
         static_class,
-        windows::core::w!("   EasyFPS - Options"), 
+        windows::core::w!("   EasyFPS - Settings"), 
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_CENTERIMAGE),
         0, 0, 360, 30, 
         hwnd, HMENU(ID_TITLE_BAR as _), None, None,

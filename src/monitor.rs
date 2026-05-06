@@ -16,14 +16,14 @@ unsafe impl Send for SystemMonitor {}
 
 impl SystemMonitor {
     pub fn new() -> Self {
-        // We don't initialize PDH here anymore to save memory at startup
+        // PDH is lazily initialized on first update to save memory at startup
         Self {
             cpu_usage: 0.0,
             gpu_usage: 0.0,
             pdh_query: 0,
             cpu_counter: 0,
             gpu_counter: 0,
-            counter_buffer: Vec::new(), // Empty initially
+            counter_buffer: Vec::new(),
         }
     }
 
@@ -168,12 +168,18 @@ impl SystemMonitor {
         }
     }
 
-
     pub fn get_cpu_usage(&self) -> f32 {
         self.cpu_usage
     }
 
     pub fn get_gpu_usage(&self) -> f32 {
         self.gpu_usage
+    }
+}
+
+/// Ensure PDH query handles are always properly released
+impl Drop for SystemMonitor {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
