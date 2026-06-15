@@ -1,17 +1,18 @@
+use crate::fullscreen::MonitorBounds;
 use crate::settings::{FpsColor, OverlayPosition, OverlaySize, Settings};
 use parking_lot::Mutex;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, TextOutW, HBRUSH,
-    PAINTSTRUCT, TRANSPARENT, RoundRect, CreatePen, PS_SOLID,
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect,
+    RoundRect, SelectObject, SetBkMode, SetTextColor, TextOutW, HBRUSH, HFONT, PAINTSTRUCT,
+    PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetSystemMetrics,
-    PeekMessageW, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes,
-    SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST, LWA_ALPHA,
-    MSG, PM_REMOVE, SM_CXSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
+    RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, TranslateMessage,
+    HWND_TOPMOST, LWA_ALPHA, MSG, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
     WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
@@ -22,6 +23,46 @@ const BORDER_RADIUS: i32 = 6;
 /// Vertical padding at the top and bottom of the overlay
 const PADDING_TOP: i32 = 4;
 const PADDING_BOTTOM: i32 = 2;
+/// ClearType anti-aliasing quality for crisp overlay text.
+const CLEARTYPE_QUALITY: u32 = 5;
+
+thread_local! {
+    /// Cached overlay font, recreated only when the font size changes. Avoids
+    /// allocating and freeing a GDI font object on every single paint.
+    static CACHED_FONT: RefCell<(HFONT, i32)> = const { RefCell::new((HFONT(0), 0)) };
+}
+
+/// Return a cached font for the given size, (re)creating it only when the size
+/// changed since the last call. The returned handle is owned by the cache and
+/// must not be deleted by the caller.
+unsafe fn get_cached_font(size: i32) -> HFONT {
+    CACHED_FONT.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.1 != size || slot.0 .0 == 0 {
+            if slot.0 .0 != 0 {
+                let _ = DeleteObject(slot.0);
+            }
+            let font = CreateFontW(
+                size,
+                0,
+                0,
+                0,
+                700,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                CLEARTYPE_QUALITY,
+                0,
+                windows::core::w!("Segoe UI"),
+            );
+            *slot = (font, size);
+        }
+        slot.0
+    })
+}
 
 /// Overlay display data (thread-safe)
 struct OverlayData {
@@ -36,12 +77,30 @@ struct OverlayData {
     show_cpu_usage: bool,
     show_gpu_usage: bool,
     overlay_opacity: u8,
+    monitor: MonitorBounds,
+}
+
+/// A compact, comparable snapshot of everything that affects the rendered
+/// overlay. Used to skip repaints/repositioning when nothing visible changed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RenderSignature {
+    fps: i32,
+    low: i32,
+    cpu: i32,
+    gpu: i32,
+    position: u8,
+    size: u8,
+    color: u8,
+    opacity: u8,
+    flags: u8,
+    monitor: (i32, i32, i32, i32),
 }
 
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
-static OVERLAY_DATA: once_cell::sync::Lazy<Mutex<OverlayData>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(OverlayData {
+static LAST_SIGNATURE: Mutex<Option<RenderSignature>> = Mutex::new(None);
+static OVERLAY_DATA: once_cell::sync::Lazy<Mutex<OverlayData>> = once_cell::sync::Lazy::new(|| {
+    Mutex::new(OverlayData {
         current_fps: 0.0,
         one_percent_low: 0.0,
         cpu_usage: 0.0,
@@ -53,7 +112,37 @@ static OVERLAY_DATA: once_cell::sync::Lazy<Mutex<OverlayData>> =
         show_cpu_usage: false,
         show_gpu_usage: false,
         overlay_opacity: 90,
-    }));
+        monitor: MonitorBounds {
+            left: 0,
+            top: 0,
+            width: 1920,
+            height: 1080,
+        },
+    })
+});
+
+fn build_signature(data: &OverlayData) -> RenderSignature {
+    let flags = (data.show_1_percent_low as u8)
+        | ((data.show_cpu_usage as u8) << 1)
+        | ((data.show_gpu_usage as u8) << 2);
+    RenderSignature {
+        fps: data.current_fps.round() as i32,
+        low: data.one_percent_low.round() as i32,
+        cpu: data.cpu_usage.round() as i32,
+        gpu: data.gpu_usage.round() as i32,
+        position: data.position as u8,
+        size: data.size as u8,
+        color: data.fps_color as u8,
+        opacity: data.overlay_opacity,
+        flags,
+        monitor: (
+            data.monitor.left,
+            data.monitor.top,
+            data.monitor.width,
+            data.monitor.height,
+        ),
+    }
+}
 
 pub fn init() -> Result<(), String> {
     std::thread::spawn(move || {
@@ -65,8 +154,15 @@ pub fn init() -> Result<(), String> {
     Ok(())
 }
 
-pub fn show(fps: f64, one_percent_low: f64, cpu_usage: f32, gpu_usage: f32, settings: &Settings) {
-    {
+pub fn show(
+    fps: f64,
+    one_percent_low: f64,
+    cpu_usage: f32,
+    gpu_usage: f32,
+    monitor: MonitorBounds,
+    settings: &Settings,
+) {
+    let signature = {
         let mut data = OVERLAY_DATA.lock();
         data.current_fps = fps;
         data.one_percent_low = one_percent_low;
@@ -79,38 +175,51 @@ pub fn show(fps: f64, one_percent_low: f64, cpu_usage: f32, gpu_usage: f32, sett
         data.show_cpu_usage = settings.show_cpu_usage;
         data.show_gpu_usage = settings.show_gpu_usage;
         data.overlay_opacity = settings.overlay_opacity;
-    }
-    
+        data.monitor = monitor;
+        build_signature(&data)
+    };
+
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
-    if hwnd_val != 0 {
-        let hwnd = HWND(hwnd_val as isize);
-        
-        // Apply Opacity
+    if hwnd_val == 0 {
+        return;
+    }
+    let hwnd = HWND(hwnd_val);
+
+    let was_visible = OVERLAY_VISIBLE.load(Ordering::SeqCst);
+
+    // Skip all GDI work when nothing that affects the rendered overlay changed.
+    let mut last = LAST_SIGNATURE.lock();
+    let unchanged = was_visible && *last == Some(signature);
+    if unchanged {
+        return;
+    }
+    *last = Some(signature);
+    drop(last);
+
+    unsafe {
+        // Apply opacity
         let alpha = (settings.overlay_opacity as f32 / 100.0 * 255.0) as u8;
-        unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
-        }
-        if !OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
+
+        if !was_visible {
             OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            }
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
-        
-        // Update position and size
-        unsafe {
-            update_window(hwnd, settings);
-            let _ = InvalidateRect(hwnd, None, true);
-        }
+
+        // Update position and size, then repaint
+        update_window(hwnd);
+        let _ = InvalidateRect(hwnd, None, true);
     }
 }
 
 pub fn hide() {
     if OVERLAY_VISIBLE.load(Ordering::SeqCst) {
         OVERLAY_VISIBLE.store(false, Ordering::SeqCst);
+        // Force a fresh repaint/reposition the next time the overlay is shown.
+        *LAST_SIGNATURE.lock() = None;
         let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
         if hwnd_val != 0 {
-            let hwnd = HWND(hwnd_val as isize);
+            let hwnd = HWND(hwnd_val);
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
@@ -121,9 +230,15 @@ pub fn hide() {
 /// Counts how many lines will be displayed in the overlay.
 fn count_visible_lines(data: &OverlayData) -> i32 {
     let mut lines = 1; // FPS is always shown
-    if data.show_1_percent_low { lines += 1; }
-    if data.show_cpu_usage { lines += 1; }
-    if data.show_gpu_usage { lines += 1; }
+    if data.show_1_percent_low {
+        lines += 1;
+    }
+    if data.show_cpu_usage {
+        lines += 1;
+    }
+    if data.show_gpu_usage {
+        lines += 1;
+    }
     lines
 }
 
@@ -140,19 +255,29 @@ fn calculate_dimensions(data: &OverlayData) -> (i32, i32) {
     let h_pad = 12; // 6px left + 6px right
 
     // FPS line: "FPS  " + up to 4-digit number → ~8 chars
-    let fps_digits = if data.current_fps >= 1000.0 { 4 }
-                     else if data.current_fps >= 100.0 { 3 }
-                     else if data.current_fps >= 10.0 { 2 }
-                     else { 1 };
+    let fps_digits = if data.current_fps >= 1000.0 {
+        4
+    } else if data.current_fps >= 100.0 {
+        3
+    } else if data.current_fps >= 10.0 {
+        2
+    } else {
+        1
+    };
     let fps_w = h_pad + char_w * (4 + fps_digits); // "FPS " + space + digits
 
     let mut max_width = fps_w;
 
     if data.show_1_percent_low {
-        let low_digits = if data.one_percent_low >= 1000.0 { 4 }
-                         else if data.one_percent_low >= 100.0 { 3 }
-                         else if data.one_percent_low >= 10.0 { 2 }
-                         else { 1 };
+        let low_digits = if data.one_percent_low >= 1000.0 {
+            4
+        } else if data.one_percent_low >= 100.0 {
+            3
+        } else if data.one_percent_low >= 10.0 {
+            2
+        } else {
+            1
+        };
         let w = h_pad + char_w * (3 + low_digits); // "1% " + digits
         max_width = max_width.max(w);
     }
@@ -171,23 +296,36 @@ fn calculate_dimensions(data: &OverlayData) -> (i32, i32) {
     (max_width, total_height)
 }
 
-fn update_window(hwnd: HWND, settings: &Settings) {
+fn update_window(hwnd: HWND) {
     let data = OVERLAY_DATA.lock();
-    let (width, total_height) = calculate_dimensions(&*data);
+    let (width, total_height) = calculate_dimensions(&data);
+    let position = data.position;
+    let monitor = data.monitor;
     drop(data);
-    
-    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    
-    let (x, y) = match settings.position {
-        OverlayPosition::TopRight => (screen_width - width - OVERLAY_MARGIN, OVERLAY_MARGIN),
-        OverlayPosition::TopLeft => (OVERLAY_MARGIN, OVERLAY_MARGIN),
+
+    // Position the overlay relative to the monitor the game is running on
+    // (correct for multi-monitor and mixed-resolution setups).
+    let (x, y) = match position {
+        OverlayPosition::TopRight => (
+            monitor.left + monitor.width - width - OVERLAY_MARGIN,
+            monitor.top + OVERLAY_MARGIN,
+        ),
+        OverlayPosition::TopLeft => (monitor.left + OVERLAY_MARGIN, monitor.top + OVERLAY_MARGIN),
     };
-    
+
     unsafe {
         // Force Z-Order: Bring to top first
         let _ = windows::Win32::UI::WindowsAndMessaging::BringWindowToTop(hwnd);
         // SWP_SHOWWINDOW ensures it stays visible even if something tried to hide it
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, total_height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            width,
+            total_height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
     }
 }
 
@@ -201,14 +339,18 @@ unsafe extern "system" fn overlay_wndproc(
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
-            
+
             let data = OVERLAY_DATA.lock();
             let (_default_width, _height, font_large, _font_small) = data.size.dimensions();
-            let (width, total_height) = calculate_dimensions(&*data);
-            
+            let (width, total_height) = calculate_dimensions(&data);
+
             // Background
             let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR));
-            let pen = CreatePen(PS_SOLID, 1, windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR));
+            let pen = CreatePen(
+                PS_SOLID,
+                1,
+                windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR),
+            );
             let old_brush = SelectObject(hdc, brush);
             let old_pen = SelectObject(hdc, pen);
             let _ = RoundRect(hdc, 0, 0, width, total_height, BORDER_RADIUS, BORDER_RADIUS);
@@ -216,22 +358,20 @@ unsafe extern "system" fn overlay_wndproc(
             SelectObject(hdc, old_pen);
             let _ = DeleteObject(brush);
             let _ = DeleteObject(pen);
-            
+
             let _ = SetBkMode(hdc, TRANSPARENT);
-            
-            // Create font ONCE for all lines (avoids repeated GDI alloc/free)
-            let font = CreateFontW(
-                font_large, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0,
-                windows::core::w!("Segoe UI"),
-            );
+
+            // Reuse a cached font (recreated only when the size changes) to
+            // avoid GDI alloc/free churn on every paint.
+            let font = get_cached_font(font_large);
             let old_font = SelectObject(hdc, font);
-            
+
             // Colors
             let line_height = font_large + 4;
             let label_color_ref = windows::Win32::Foundation::COLORREF(0xAAAAAA); // Light gray for labels
             let (r, g, b) = data.fps_color.to_rgb();
             let value_color_ref = windows::Win32::Foundation::COLORREF(
-                 (b as u32) << 16 | (g as u32) << 8 | (r as u32)
+                (b as u32) << 16 | (g as u32) << 8 | (r as u32),
             );
 
             let mut current_y = PADDING_TOP;
@@ -243,11 +383,15 @@ unsafe extern "system" fn overlay_wndproc(
                 SetTextColor(hdc, label_color_ref);
                 let label_wide: Vec<u16> = format!("{}  ", label).encode_utf16().collect();
                 let _ = TextOutW(hdc, 6, y, &label_wide);
-                
+
                 // Calc label width to position value
                 let mut size = windows::Win32::Foundation::SIZE::default();
-                let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(hdc, &label_wide, &mut size);
-                
+                let _ = windows::Win32::Graphics::Gdi::GetTextExtentPoint32W(
+                    hdc,
+                    &label_wide,
+                    &mut size,
+                );
+
                 // Draw Value (Colored)
                 SetTextColor(hdc, value_color_ref);
                 let value_wide: Vec<u16> = value.encode_utf16().collect();
@@ -278,13 +422,13 @@ unsafe extern "system" fn overlay_wndproc(
                 let val = format!("{:.0}%", data.gpu_usage);
                 draw_stat_line("GPU", val, current_y);
             }
-            
-            // Restore and cleanup font (single deallocation)
+
+            // Restore the previous font; the cached font is kept alive in the
+            // thread-local cache and reused on the next paint.
             SelectObject(hdc, old_font);
-            let _ = DeleteObject(font);
-            
+
             drop(data);
-            
+
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
@@ -299,45 +443,58 @@ unsafe extern "system" fn overlay_wndproc(
 fn run_overlay_window() -> Result<(), String> {
     unsafe {
         let class_name = windows::core::w!("EasyFPS_Overlay");
-        
+
         let wc = WNDCLASSW {
             lpfnWndProc: Some(overlay_wndproc),
             lpszClassName: class_name,
             hbrBackground: HBRUSH(0),
             ..Default::default()
         };
-        
+
         RegisterClassW(&wc);
-        
+
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
             class_name,
             windows::core::w!(""),
             WS_POPUP,
-            0, 0, 100, 50,
-            None, None, None, None,
+            0,
+            0,
+            100,
+            50,
+            None,
+            None,
+            None,
+            None,
         );
-        
+
         if hwnd.0 == 0 {
             return Err("CreateWindowExW failed".to_string());
         }
-        
+
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
-        
+
         SetLayeredWindowAttributes(hwnd, None, 230, LWA_ALPHA)
             .map_err(|e| format!("SetLayeredWindowAttributes failed: {}", e))?;
-        
+
+        // Block on the message queue. The overlay only repaints when the main
+        // thread calls InvalidateRect/SetWindowPos, which wake this loop, so
+        // there is no need to spin.
         let mut msg = MSG::default();
-        loop {
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == windows::Win32::UI::WindowsAndMessaging::WM_QUIT {
-                    return Ok(());
-                }
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(16));
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
+
+        // Release the cached font owned by this thread.
+        CACHED_FONT.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.0 .0 != 0 {
+                let _ = DeleteObject(slot.0);
+                *slot = (HFONT(0), 0);
+            }
+        });
+        Ok(())
     }
 }
 
@@ -345,9 +502,7 @@ pub fn shutdown() {
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
     if hwnd_val != 0 {
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(
-                HWND(hwnd_val as isize)
-            );
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(hwnd_val));
         }
         OVERLAY_HWND.store(0, Ordering::SeqCst);
     }

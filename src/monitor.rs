@@ -1,6 +1,6 @@
 use windows::Win32::System::Performance::{
-    PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue,
-    PdhOpenQueryW, PDH_FMT_DOUBLE,
+    PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
+    PDH_FMT_DOUBLE,
 };
 
 pub struct SystemMonitor {
@@ -54,10 +54,10 @@ impl SystemMonitor {
                 0,
                 &mut self.gpu_counter,
             );
-            
+
             // Initial collect to prime counters
             let _ = PdhCollectQueryData(self.pdh_query);
-            
+
             // Pre-allocate buffer only when needed
             self.counter_buffer = Vec::with_capacity(16384);
         }
@@ -100,13 +100,14 @@ impl SystemMonitor {
                     if show_cpu {
                         let mut counter_type: u32 = 0;
                         let mut value = Default::default();
-                        
+
                         if PdhGetFormattedCounterValue(
                             self.cpu_counter,
                             PDH_FMT_DOUBLE,
                             Some(&mut counter_type),
                             &mut value,
-                        ) == 0 {
+                        ) == 0
+                        {
                             self.cpu_usage = value.Anonymous.doubleValue as f32;
                         }
                     } else {
@@ -118,10 +119,10 @@ impl SystemMonitor {
                         use windows::Win32::System::Performance::{
                             PdhGetFormattedCounterArrayW, PDH_FMT_COUNTERVALUE_ITEM_W,
                         };
-                        
+
                         let mut required_size = 0;
                         let mut item_count = 0;
-                        
+
                         // First call to get size
                         let _ = PdhGetFormattedCounterArrayW(
                             self.gpu_counter,
@@ -130,34 +131,37 @@ impl SystemMonitor {
                             &mut item_count,
                             None,
                         );
-                        
+
                         if required_size > 0 {
                             // Resize buffer if needed
                             if self.counter_buffer.len() < required_size as usize {
-                                 self.counter_buffer.resize(required_size as usize, 0);
+                                self.counter_buffer.resize(required_size as usize, 0);
                             }
-    
-                            let items_ptr = self.counter_buffer.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
-                            
+
+                            let items_ptr = self.counter_buffer.as_mut_ptr()
+                                as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
+
                             if PdhGetFormattedCounterArrayW(
                                 self.gpu_counter,
                                 PDH_FMT_DOUBLE,
                                 &mut required_size,
                                 &mut item_count,
                                 Some(items_ptr),
-                            ) == 0 {
-                                 let items = std::slice::from_raw_parts(items_ptr, item_count as usize);
-                                 let mut max_load = 0.0;
-                                 
-                                 for item in items {
-                                     if item.FmtValue.CStatus == 0 { 
-                                         let val = item.FmtValue.Anonymous.doubleValue;
-                                         if val > max_load {
-                                             max_load = val;
-                                         }
-                                     }
-                                 }
-                                 self.gpu_usage = max_load as f32;
+                            ) == 0
+                            {
+                                let items =
+                                    std::slice::from_raw_parts(items_ptr, item_count as usize);
+                                let mut max_load = 0.0;
+
+                                for item in items {
+                                    if item.FmtValue.CStatus == 0 {
+                                        let val = item.FmtValue.Anonymous.doubleValue;
+                                        if val > max_load {
+                                            max_load = val;
+                                        }
+                                    }
+                                }
+                                self.gpu_usage = max_load as f32;
                             }
                         }
                     } else {

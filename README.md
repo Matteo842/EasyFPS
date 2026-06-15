@@ -19,6 +19,7 @@ I wanted a true **plug-and-play** solution: something that requires zero configu
 * **Accurate Monitoring:** Powered by Intel's PresentMon for precise FPS and 1% Low metrics.
 * **Safe & Anti-Cheat Friendly:** Reads performance telemetry passively without injecting code or hooking into the game process.
 * **Native Interface:** Uses native generic Windows APIs (Win32 GDI/DWM) for a clean, non-intrusive overlay.
+* **Multi-Monitor Aware:** Detects the monitor the game is running on and places the overlay on the correct screen.
 * **System Tray Integration:** Runs quietly in the background, accessible completely via the system tray.
 
 ## 📋 Requirements
@@ -38,6 +39,13 @@ If you want to build the source code yourself (instead of downloading a release)
     ```
 4.  **Run:** The executable will be in `./target/release/easyfps.exe`.
     * *Note: The build process automatically embeds the included `PresentMon.exe` into the final binary.*
+
+### Development notes
+
+* **Admin manifest:** Only **release** builds embed the `requireAdministrator` manifest. Debug builds (`cargo build`, `cargo test`) run without forced elevation so the test harness can launch normally. Set `EASYFPS_FORCE_MANIFEST=1` to embed it in debug builds too.
+* **Tests & lints:** `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --all -- --check` are run in CI (see `.github/workflows/ci.yml`).
+* **Debug logging:** Logging is opt-in. Set the `EASYFPS_DEBUG` environment variable to write diagnostics to `%LOCALAPPDATA%\EasyFPS\debug.log`.
+* **PresentMon:** Built against the embedded Intel PresentMon binary; the CSV parser tolerates the column-name differences across PresentMon versions.
 
 ## 🎮 Usage
 

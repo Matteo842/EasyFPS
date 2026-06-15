@@ -1,9 +1,6 @@
-fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
-        let mut res = winres::WindowsResource::new();
-        
-        // Set application manifest for admin privileges
-        res.set_manifest(r#"
+// Application manifest requesting administrator privileges. Required so that
+// PresentMon/ETW can read performance telemetry for all processes.
+const ADMIN_MANIFEST: &str = r#"
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
@@ -33,14 +30,33 @@ fn main() {
     </windowsSettings>
   </application>
 </assembly>
-"#);
+"#;
 
-        // Set icon if it exists
-        if std::path::Path::new("assets/icon.ico").exists() {
-            res.set_icon("assets/icon.ico");
-        }
-        
-        res.compile().expect("Failed to compile Windows resources");
+fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
+        return;
     }
-}
 
+    let mut res = winres::WindowsResource::new();
+
+    // Set icon if it exists
+    if std::path::Path::new("assets/icon.ico").exists() {
+        res.set_icon("assets/icon.ico");
+    }
+
+    // The admin manifest is only embedded in release builds (the shipped
+    // artifact). winres links the manifest into *every* binary of this package,
+    // including the unit-test harness, and a `requireAdministrator` binary
+    // cannot be launched by `cargo test` without elevation (error 740).
+    // Embedding it only for release keeps `cargo test` working while ensuring
+    // the distributed executable still requests administrator rights.
+    //
+    // Set EASYFPS_FORCE_MANIFEST=1 to embed it in debug builds too.
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let force = std::env::var_os("EASYFPS_FORCE_MANIFEST").is_some();
+    if profile == "release" || force {
+        res.set_manifest(ADMIN_MANIFEST);
+    }
+
+    res.compile().expect("Failed to compile Windows resources");
+}

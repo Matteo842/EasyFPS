@@ -2,24 +2,37 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use std::io::{Write, BufRead, BufReader};
-use std::process::{Command, Stdio, Child};
 use parking_lot::Mutex;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
 
 // --- LOGGING ---
+/// Debug logging is opt-in to keep the app lightweight and avoid an
+/// ever-growing log file during normal use. Enable by setting the
+/// `EASYFPS_DEBUG` environment variable to any non-empty value.
+static DEBUG_ENABLED: once_cell::sync::Lazy<bool> =
+    once_cell::sync::Lazy::new(|| std::env::var_os("EASYFPS_DEBUG").is_some_and(|v| !v.is_empty()));
+
 fn log_debug(msg: &str) {
+    if !*DEBUG_ENABLED {
+        return;
+    }
     if let Some(mut path) = dirs::data_local_dir() {
         path.push("EasyFPS");
         let _ = std::fs::create_dir_all(&path);
         path.push("debug.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = writeln!(file, "[{}] {}", format_timestamp(), msg);
         }
     }
 }
 
-/// Produce a human-readable timestamp without pulling in the `chrono` crate.
-/// Format: seconds since UNIX epoch (compact, monotonically increasing).
+/// Produce a human-readable wall-clock timestamp (HH:MM:SS in UTC) without
+/// pulling in the `chrono` crate.
 fn format_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
@@ -39,6 +52,25 @@ const MAX_SAMPLES: usize = 2000;
 pub struct FpsData {
     pub fps: f64,
     pub one_percent_low: f64,
+}
+
+/// Locate the frame-time column in a PresentMon CSV header line.
+/// Returns the column index of the "between presents" timing field, tolerating
+/// the casing/naming differences between PresentMon versions.
+fn find_frame_time_column(header: &str) -> Option<usize> {
+    let normalize = |s: &str| s.trim().to_ascii_lowercase();
+    let cols: Vec<String> = header.split(',').map(normalize).collect();
+
+    // Preferred exact matches, in priority order.
+    const CANDIDATES: &[&str] = &["msbetweenpresents", "msbetweendisplaychange"];
+    for candidate in CANDIDATES {
+        if let Some(idx) = cols.iter().position(|c| c == candidate) {
+            return Some(idx);
+        }
+    }
+
+    // Fallback: any column that looks like a "ms between ..." timing field.
+    cols.iter().position(|c| c.starts_with("msbetween"))
 }
 
 /// Shared global state
@@ -66,7 +98,7 @@ pub fn init() -> Result<(), String> {
     }
     STATE.is_running.store(true, Ordering::SeqCst);
     log_debug("FPS capture init (PresentMon Mode)");
-    
+
     // Search for PresentMon.exe in several locations
     if let Some(path) = detect_presentmon_path() {
         log_debug(&format!("PresentMon found at: {:?}", path));
@@ -79,37 +111,42 @@ pub fn init() -> Result<(), String> {
 }
 
 /// Cached path to the PresentMon binary
-static PRESENTMON_PATH: once_cell::sync::Lazy<Mutex<Option<std::path::PathBuf>>> = once_cell::sync::Lazy::new(|| {
-    Mutex::new(None)
-});
+static PRESENTMON_PATH: once_cell::sync::Lazy<Mutex<Option<std::path::PathBuf>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(None));
 
 /// PresentMon binary embedded in the executable as a fallback
 const PRESENTMON_BIN: &[u8] = include_bytes!("../PresentMon.exe");
 
 fn detect_presentmon_path() -> Option<std::path::PathBuf> {
     let filename = "PresentMon.exe";
-    
+
     // 1. Check executable directory (highest priority — manual override)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let p = parent.join(filename);
-            if p.exists() { return Some(p); }
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
 
     // 2. Check current working directory
     if let Ok(cwd) = std::env::current_dir() {
         let p = cwd.join(filename);
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
     }
-    
+
     // 3. Walk up parent directories (useful during development)
     if let Ok(exe_path) = std::env::current_exe() {
         let mut current = exe_path.parent();
         for _ in 0..4 {
             if let Some(p) = current {
                 let path = p.join(filename);
-                if path.exists() { return Some(path); }
+                if path.exists() {
+                    return Some(path);
+                }
                 current = p.parent();
             }
         }
@@ -126,20 +163,23 @@ fn detect_presentmon_path() -> Option<std::path::PathBuf> {
 fn extract_embedded_presentmon() -> Option<std::path::PathBuf> {
     let mut temp_path = std::env::temp_dir();
     temp_path.push("EasyFPS");
-    
+
     if let Err(e) = std::fs::create_dir_all(&temp_path) {
         log_debug(&format!("Failed to create temp dir: {}", e));
         return None;
     }
-    
+
     temp_path.push("PresentMon_Internal.exe");
-    
+
     // Try to write. If the file is locked (e.g. previous instance), we hope the existing copy is valid.
     match std::fs::write(&temp_path, PRESENTMON_BIN) {
         Ok(_) => log_debug("Embedded PresentMon extracted."),
-        Err(e) => log_debug(&format!("Could not write embedded binary (might be in use): {}", e)),
+        Err(e) => log_debug(&format!(
+            "Could not write embedded binary (might be in use): {}",
+            e
+        )),
     }
-    
+
     if temp_path.exists() {
         Some(temp_path)
     } else {
@@ -167,33 +207,47 @@ pub fn get_fps_for_process(process_id: u32) -> Option<FpsData> {
     if STATE.target_process_id.load(Ordering::SeqCst) != process_id {
         set_target_process(process_id);
     }
-    
+
     let samples = STATE.ms_samples.lock();
-    
-    if samples.is_empty() {
-        return Some(FpsData { fps: 0.0, one_percent_low: 0.0 });
+    let mut frame_times: Vec<f64> = samples.iter().cloned().collect();
+    drop(samples);
+
+    Some(compute_fps(&mut frame_times))
+}
+
+/// Compute average FPS and the 1% low from a buffer of frame times (ms between
+/// presents). The slice may be reordered (we use an in-place selection).
+fn compute_fps(frame_times: &mut [f64]) -> FpsData {
+    let count = frame_times.len();
+    if count == 0 {
+        return FpsData::default();
     }
 
-    let count = samples.len();
-    let sum: f64 = samples.iter().sum();
-    
+    let sum: f64 = frame_times.iter().sum();
     if sum == 0.0 {
-        return Some(FpsData { fps: 0.0, one_percent_low: 0.0 });
+        return FpsData::default();
     }
 
     // Average Frame Time → FPS
     let avg_ms = sum / count as f64;
     let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
 
-    // 1% Low: sort to find the 99th percentile (slowest frames)
-    let mut sorted: Vec<f64> = samples.iter().cloned().collect();
-    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    
-    let idx_1_percent = (count as f64 * 0.01).ceil() as usize;
-    let low_ms = sorted[idx_1_percent.min(count - 1)];
+    // 1% Low: find the frame time at the 99th percentile (slowest frames).
+    // We only need the element at a single index, so a full sort is wasteful.
+    // `select_nth_unstable_by` runs in O(n) instead of O(n log n). Sorting
+    // descending puts the slowest frames first, so `idx_1_percent` lands within
+    // the slowest 1% of frames.
+    let idx_1_percent = ((count as f64 * 0.01).ceil() as usize).min(count - 1);
+    let (_, nth, _) = frame_times.select_nth_unstable_by(idx_1_percent, |a, b| {
+        b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let low_ms = *nth;
     let one_percent_low = if low_ms > 0.0 { 1000.0 / low_ms } else { 0.0 };
 
-    Some(FpsData { fps, one_percent_low })
+    FpsData {
+        fps,
+        one_percent_low,
+    }
 }
 
 // --- INTERNAL ---
@@ -209,7 +263,7 @@ fn stop_presentmon() {
 
 fn start_presentmon(pid: u32) {
     stop_presentmon();
-    
+
     if pid == 0 {
         return;
     }
@@ -217,17 +271,19 @@ fn start_presentmon(pid: u32) {
     log_debug(&format!("Starting PresentMon for PID {}", pid));
 
     let pm_path_guard = PRESENTMON_PATH.lock();
-    let pm_executable = pm_path_guard.as_ref()
+    let pm_executable = pm_path_guard
+        .as_ref()
         .map(|p| p.as_os_str())
         .unwrap_or(std::ffi::OsStr::new("PresentMon.exe"));
 
     let mut cmd = Command::new(pm_executable);
-    cmd.arg("-process_id").arg(pid.to_string())
-       .arg("-output_stdout")
-       .arg("-stop_existing_session");
+    cmd.arg("-process_id")
+        .arg(pid.to_string())
+        .arg("-output_stdout")
+        .arg("-stop_existing_session");
 
     cmd.stdout(Stdio::piped());
-    
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -241,50 +297,119 @@ fn start_presentmon(pid: u32) {
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stdout);
                     let mut lines = reader.lines();
-                    
-                    // Find the header to locate the "MsBetweenPresents" column index
+
+                    // Find the header to locate the frame-time column index.
+                    // PresentMon has used both "MsBetweenPresents" (v1) and
+                    // "msBetweenPresents" (v2) over time, so match leniently.
                     let mut ms_idx = usize::MAX;
-                    
-                    while let Some(Ok(line)) = lines.next() {
-                        if line.starts_with("Application") || line.contains("MsBetweenPresents") {
-                            let cols: Vec<&str> = line.split(',').collect();
-                            if let Some(idx) = cols.iter().position(|&c| c.trim() == "MsBetweenPresents") {
-                                ms_idx = idx;
-                                log_debug(&format!("Found MsBetweenPresents at col {}", ms_idx));
-                                break;
-                            }
+
+                    for line in lines.by_ref() {
+                        // Skip lines that could not be read (e.g. transient
+                        // pipe hiccup or non-UTF8) instead of aborting.
+                        let line = match line {
+                            Ok(l) => l,
+                            Err(_) => continue,
+                        };
+                        if let Some(idx) = find_frame_time_column(&line) {
+                            ms_idx = idx;
+                            log_debug(&format!("Found frame-time column at index {}", ms_idx));
+                            break;
                         }
                     }
-                    
+
                     if ms_idx == usize::MAX {
-                        log_debug("Could not find MsBetweenPresents header");
+                        log_debug("Could not find frame-time header column");
                         return;
                     }
 
                     // Read data lines
-                    while let Some(Ok(line)) = lines.next() {
-                         if !STATE.is_running.load(Ordering::SeqCst) {
-                             break;
-                         }
+                    for line in lines {
+                        if !STATE.is_running.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let line = match line {
+                            Ok(l) => l,
+                            Err(_) => continue,
+                        };
 
-                         let cols: Vec<&str> = line.split(',').collect();
-                         if cols.len() > ms_idx {
-                             if let Ok(ms) = cols[ms_idx].trim().parse::<f64>() {
-                                 let mut samples = STATE.ms_samples.lock();
-                                 samples.push_back(ms);
-                                 if samples.len() > MAX_SAMPLES {
-                                     samples.pop_front();
-                                 }
-                             }
-                         }
+                        let cols: Vec<&str> = line.split(',').collect();
+                        if cols.len() > ms_idx {
+                            if let Ok(ms) = cols[ms_idx].trim().parse::<f64>() {
+                                let mut samples = STATE.ms_samples.lock();
+                                samples.push_back(ms);
+                                if samples.len() > MAX_SAMPLES {
+                                    samples.pop_front();
+                                }
+                            }
+                        }
                     }
                 });
             }
-            
+
             *STATE.running_process.lock() = Some(child);
         }
         Err(e) => {
             log_debug(&format!("Failed to start PresentMon: {}", e));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_samples_yield_zero() {
+        let data = compute_fps(&mut []);
+        assert_eq!(data.fps, 0.0);
+        assert_eq!(data.one_percent_low, 0.0);
+    }
+
+    #[test]
+    fn steady_60fps() {
+        // 16.6667 ms per frame ≈ 60 FPS
+        let mut samples = vec![1000.0 / 60.0; 500];
+        let data = compute_fps(&mut samples);
+        assert!((data.fps - 60.0).abs() < 0.01, "fps was {}", data.fps);
+        assert!((data.one_percent_low - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn one_percent_low_reflects_slow_frames() {
+        // 950 fast frames (100 FPS) and 50 slow frames (20 FPS). The slowest 1%
+        // of frames are all 50ms, so the 1% low should land at ~20 FPS, well
+        // below the average FPS.
+        let mut samples = vec![10.0; 950];
+        samples.extend(std::iter::repeat_n(50.0, 50));
+        let data = compute_fps(&mut samples);
+        assert!(
+            data.fps > data.one_percent_low,
+            "fps {} should exceed 1% low {}",
+            data.fps,
+            data.one_percent_low
+        );
+        assert!(
+            (data.one_percent_low - 20.0).abs() < 0.5,
+            "1% low was {}",
+            data.one_percent_low
+        );
+    }
+
+    #[test]
+    fn header_column_detection_v1() {
+        let header = "Application,ProcessID,SwapChainAddress,MsBetweenPresents,MsInPresentAPI";
+        assert_eq!(find_frame_time_column(header), Some(3));
+    }
+
+    #[test]
+    fn header_column_detection_lowercase() {
+        let header = "application,processId,msBetweenPresents";
+        assert_eq!(find_frame_time_column(header), Some(2));
+    }
+
+    #[test]
+    fn header_column_detection_missing() {
+        let header = "Application,ProcessID,Runtime";
+        assert_eq!(find_frame_time_column(header), None);
     }
 }
