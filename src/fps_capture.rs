@@ -46,7 +46,16 @@ fn format_timestamp() -> String {
 }
 
 // --- DATA STRUCTURES ---
+/// Maximum number of recent frame-time samples kept in memory. This long
+/// history is used for the 1% low metric (slow frames are rare and need a wide
+/// window to be meaningful). The instantaneous FPS uses only the most recent
+/// `FPS_WINDOW_MS` of samples (see `compute_fps`).
 const MAX_SAMPLES: usize = 2000;
+
+/// Time window (in milliseconds) used to compute the displayed FPS. A short
+/// window keeps the counter responsive/near-real-time (similar to Minecraft's
+/// F3 or the Windows Game Bar) instead of behaving like a long-term average.
+const FPS_WINDOW_MS: f64 = 500.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct FpsData {
@@ -223,14 +232,29 @@ fn compute_fps(frame_times: &mut [f64]) -> FpsData {
         return FpsData::default();
     }
 
-    let sum: f64 = frame_times.iter().sum();
-    if sum == 0.0 {
-        return FpsData::default();
+    // Responsive FPS: average only over the most recent frames (a short time
+    // window), not the whole buffer. Averaging the entire 2000-sample buffer
+    // would smooth FPS over tens of seconds and make the counter feel like a
+    // long-running average instead of the near-real-time value users expect.
+    // We walk backwards from the newest sample, accumulating frame times until
+    // we cover ~FPS_WINDOW_MS, then report frames-per-second over that window.
+    let mut window_ms = 0.0;
+    let mut window_frames = 0usize;
+    for &ms in frame_times.iter().rev() {
+        if ms <= 0.0 {
+            continue;
+        }
+        window_ms += ms;
+        window_frames += 1;
+        if window_ms >= FPS_WINDOW_MS {
+            break;
+        }
     }
-
-    // Average Frame Time → FPS
-    let avg_ms = sum / count as f64;
-    let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
+    let fps = if window_ms > 0.0 {
+        window_frames as f64 * 1000.0 / window_ms
+    } else {
+        0.0
+    };
 
     // 1% Low: find the frame time at the 99th percentile (slowest frames).
     // We only need the element at a single index, so a full sort is wasteful.
@@ -376,11 +400,11 @@ mod tests {
 
     #[test]
     fn one_percent_low_reflects_slow_frames() {
-        // 950 fast frames (100 FPS) and 50 slow frames (20 FPS). The slowest 1%
-        // of frames are all 50ms, so the 1% low should land at ~20 FPS, well
-        // below the average FPS.
-        let mut samples = vec![10.0; 950];
-        samples.extend(std::iter::repeat_n(50.0, 50));
+        // 50 old slow frames (20 FPS) followed by 950 recent fast frames
+        // (100 FPS). The slowest 1% of frames are the 50ms ones, so the 1% low
+        // should land at ~20 FPS, well below the (recent) average FPS.
+        let mut samples = vec![50.0; 50];
+        samples.extend(std::iter::repeat_n(10.0, 950));
         let data = compute_fps(&mut samples);
         assert!(
             data.fps > data.one_percent_low,
@@ -392,6 +416,21 @@ mod tests {
             (data.one_percent_low - 20.0).abs() < 0.5,
             "1% low was {}",
             data.one_percent_low
+        );
+    }
+
+    #[test]
+    fn fps_tracks_recent_window_not_whole_buffer() {
+        // A long history of slow 20 FPS frames, then a recent burst at 120 FPS.
+        // The displayed FPS must follow the recent frames, not the long-term
+        // average (this is the responsiveness fix).
+        let mut samples = vec![50.0; 1000]; // old: 20 FPS
+        samples.extend(std::iter::repeat_n(1000.0 / 120.0, 200)); // recent: 120 FPS
+        let data = compute_fps(&mut samples);
+        assert!(
+            data.fps > 100.0,
+            "fps should track the recent ~120 FPS, was {}",
+            data.fps
         );
     }
 
