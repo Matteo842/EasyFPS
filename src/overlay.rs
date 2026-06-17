@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect,
-    RoundRect, SelectObject, SetBkMode, SetTextColor, TextOutW, HBRUSH, HFONT, PAINTSTRUCT,
-    PS_SOLID, TRANSPARENT,
+    RoundRect, SelectObject, SetBkMode, SetTextColor, TextOutW, FONT_CHARSET, FONT_CLIP_PRECISION,
+    FONT_OUTPUT_PRECISION, FONT_QUALITY, HBRUSH, HFONT, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
@@ -24,12 +24,12 @@ const BORDER_RADIUS: i32 = 6;
 const PADDING_TOP: i32 = 4;
 const PADDING_BOTTOM: i32 = 2;
 /// ClearType anti-aliasing quality for crisp overlay text.
-const CLEARTYPE_QUALITY: u32 = 5;
+const CLEARTYPE_QUALITY: u8 = 5;
 
 thread_local! {
     /// Cached overlay font, recreated only when the font size changes. Avoids
     /// allocating and freeing a GDI font object on every single paint.
-    static CACHED_FONT: RefCell<(HFONT, i32)> = const { RefCell::new((HFONT(0), 0)) };
+    static CACHED_FONT: RefCell<(HFONT, i32)> = const { RefCell::new((HFONT(std::ptr::null_mut()), 0)) };
 }
 
 /// Return a cached font for the given size, (re)creating it only when the size
@@ -38,9 +38,9 @@ thread_local! {
 unsafe fn get_cached_font(size: i32) -> HFONT {
     CACHED_FONT.with(|cell| {
         let mut slot = cell.borrow_mut();
-        if slot.1 != size || slot.0 .0 == 0 {
-            if slot.0 .0 != 0 {
-                let _ = DeleteObject(slot.0);
+        if slot.1 != size || slot.0 .0.is_null() {
+            if !slot.0 .0.is_null() {
+                let _ = DeleteObject(slot.0.into());
             }
             let font = CreateFontW(
                 size,
@@ -51,10 +51,10 @@ unsafe fn get_cached_font(size: i32) -> HFONT {
                 0,
                 0,
                 0,
-                0,
-                0,
-                0,
-                CLEARTYPE_QUALITY,
+                FONT_CHARSET(0),
+                FONT_OUTPUT_PRECISION(0),
+                FONT_CLIP_PRECISION(0),
+                FONT_QUALITY(CLEARTYPE_QUALITY),
                 0,
                 windows::core::w!("Segoe UI"),
             );
@@ -183,7 +183,7 @@ pub fn show(
     if hwnd_val == 0 {
         return;
     }
-    let hwnd = HWND(hwnd_val);
+    let hwnd = HWND(hwnd_val as *mut _);
 
     let was_visible = OVERLAY_VISIBLE.load(Ordering::SeqCst);
 
@@ -199,7 +199,12 @@ pub fn show(
     unsafe {
         // Apply opacity
         let alpha = (settings.overlay_opacity as f32 / 100.0 * 255.0) as u8;
-        let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(
+            hwnd,
+            windows::Win32::Foundation::COLORREF(0),
+            alpha,
+            LWA_ALPHA,
+        );
 
         if !was_visible {
             OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
@@ -208,7 +213,7 @@ pub fn show(
 
         // Update position and size, then repaint
         update_window(hwnd);
-        let _ = InvalidateRect(hwnd, None, true);
+        let _ = InvalidateRect(Some(hwnd), None, true);
     }
 }
 
@@ -219,7 +224,7 @@ pub fn hide() {
         *LAST_SIGNATURE.lock() = None;
         let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
         if hwnd_val != 0 {
-            let hwnd = HWND(hwnd_val);
+            let hwnd = HWND(hwnd_val as *mut _);
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
@@ -319,7 +324,7 @@ fn update_window(hwnd: HWND) {
         // SWP_SHOWWINDOW ensures it stays visible even if something tried to hide it
         let _ = SetWindowPos(
             hwnd,
-            HWND_TOPMOST,
+            Some(HWND_TOPMOST),
             x,
             y,
             width,
@@ -351,20 +356,20 @@ unsafe extern "system" fn overlay_wndproc(
                 1,
                 windows::Win32::Foundation::COLORREF(BACKGROUND_COLOR),
             );
-            let old_brush = SelectObject(hdc, brush);
-            let old_pen = SelectObject(hdc, pen);
+            let old_brush = SelectObject(hdc, brush.into());
+            let old_pen = SelectObject(hdc, pen.into());
             let _ = RoundRect(hdc, 0, 0, width, total_height, BORDER_RADIUS, BORDER_RADIUS);
             SelectObject(hdc, old_brush);
             SelectObject(hdc, old_pen);
-            let _ = DeleteObject(brush);
-            let _ = DeleteObject(pen);
+            let _ = DeleteObject(brush.into());
+            let _ = DeleteObject(pen.into());
 
             let _ = SetBkMode(hdc, TRANSPARENT);
 
             // Reuse a cached font (recreated only when the size changes) to
             // avoid GDI alloc/free churn on every paint.
             let font = get_cached_font(font_large);
-            let old_font = SelectObject(hdc, font);
+            let old_font = SelectObject(hdc, font.into());
 
             // Colors
             let line_height = font_large + 4;
@@ -447,7 +452,7 @@ fn run_overlay_window() -> Result<(), String> {
         let wc = WNDCLASSW {
             lpfnWndProc: Some(overlay_wndproc),
             lpszClassName: class_name,
-            hbrBackground: HBRUSH(0),
+            hbrBackground: HBRUSH::default(),
             ..Default::default()
         };
 
@@ -466,15 +471,16 @@ fn run_overlay_window() -> Result<(), String> {
             None,
             None,
             None,
-        );
+        )
+        .map_err(|e| format!("CreateWindowExW failed: {}", e))?;
 
-        if hwnd.0 == 0 {
+        if hwnd.0.is_null() {
             return Err("CreateWindowExW failed".to_string());
         }
 
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
-        SetLayeredWindowAttributes(hwnd, None, 230, LWA_ALPHA)
+        SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), 230, LWA_ALPHA)
             .map_err(|e| format!("SetLayeredWindowAttributes failed: {}", e))?;
 
         // Block on the message queue. The overlay only repaints when the main
@@ -489,9 +495,9 @@ fn run_overlay_window() -> Result<(), String> {
         // Release the cached font owned by this thread.
         CACHED_FONT.with(|cell| {
             let mut slot = cell.borrow_mut();
-            if slot.0 .0 != 0 {
-                let _ = DeleteObject(slot.0);
-                *slot = (HFONT(0), 0);
+            if !slot.0 .0.is_null() {
+                let _ = DeleteObject(slot.0.into());
+                *slot = (HFONT(std::ptr::null_mut()), 0);
             }
         });
         Ok(())
@@ -502,7 +508,7 @@ pub fn shutdown() {
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
     if hwnd_val != 0 {
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(hwnd_val));
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(hwnd_val as *mut _));
         }
         OVERLAY_HWND.store(0, Ordering::SeqCst);
     }

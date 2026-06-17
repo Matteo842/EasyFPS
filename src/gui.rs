@@ -58,9 +58,9 @@ type SaveCallback = Box<dyn FnOnce(Settings) + Send>;
 thread_local! {
     static CURRENT_SETTINGS: std::cell::RefCell<Option<Settings>> = const { std::cell::RefCell::new(None) };
     static SAVE_CALLBACK: std::cell::RefCell<Option<SaveCallback>> = const { std::cell::RefCell::new(None) };
-    static BRUSH_BLACK: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(0)) };
-    static BRUSH_DARK_GRAY: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(0)) };
-    static BRUSH_RED: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(0)) };
+    static BRUSH_BLACK: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(std::ptr::null_mut())) };
+    static BRUSH_DARK_GRAY: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(std::ptr::null_mut())) };
+    static BRUSH_RED: std::cell::RefCell<HBRUSH> = const { std::cell::RefCell::new(HBRUSH(std::ptr::null_mut())) };
 }
 
 pub fn is_open() -> bool {
@@ -132,7 +132,7 @@ unsafe fn create_settings_window() {
         None,
     );
 
-    if hwnd.0 != 0 {
+    if let Ok(hwnd) = hwnd {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
 
@@ -144,9 +144,9 @@ unsafe fn create_settings_window() {
     }
 
     // Release the brushes when the window closes.
-    let _ = BRUSH_BLACK.with(|b| DeleteObject(*b.borrow()));
-    let _ = BRUSH_DARK_GRAY.with(|b| DeleteObject(*b.borrow()));
-    let _ = BRUSH_RED.with(|b| DeleteObject(*b.borrow()));
+    let _ = BRUSH_BLACK.with(|b| DeleteObject((*b.borrow()).into()));
+    let _ = BRUSH_DARK_GRAY.with(|b| DeleteObject((*b.borrow()).into()));
+    let _ = BRUSH_RED.with(|b| DeleteObject((*b.borrow()).into()));
 }
 
 unsafe fn create_controls(hwnd: HWND) {
@@ -165,8 +165,8 @@ unsafe fn create_controls(hwnd: HWND) {
         0,
         360,
         30,
-        hwnd,
-        HMENU(ID_TITLE_BAR as _),
+        Some(hwnd),
+        Some(HMENU(ID_TITLE_BAR as _)),
         None,
         None,
     );
@@ -181,8 +181,8 @@ unsafe fn create_controls(hwnd: HWND) {
         0,
         30,
         30,
-        hwnd,
-        HMENU(ID_CLOSE_BTN as _),
+        Some(hwnd),
+        Some(HMENU(ID_CLOSE_BTN as _)),
         None,
         None,
     );
@@ -357,8 +357,8 @@ unsafe fn create_controls(hwnd: HWND) {
         230 + offset_y,
         40,
         20,
-        hwnd,
-        HMENU(ID_OPACITY_VAL as _),
+        Some(hwnd),
+        Some(HMENU(ID_OPACITY_VAL as _)),
         None,
         None,
     );
@@ -373,8 +373,8 @@ unsafe fn create_controls(hwnd: HWND) {
         280 + offset_y,
         90,
         30, // Lowered y position
-        hwnd,
-        HMENU(ID_SAVE as _),
+        Some(hwnd),
+        Some(HMENU(ID_SAVE as _)),
         None,
         None,
     );
@@ -388,8 +388,8 @@ unsafe fn create_controls(hwnd: HWND) {
         280 + offset_y,
         90,
         30, // Lowered y position
-        hwnd,
-        HMENU(ID_CANCEL as _),
+        Some(hwnd),
+        Some(HMENU(ID_CANCEL as _)),
         None,
         None,
     );
@@ -406,7 +406,7 @@ unsafe fn create_label(hwnd: HWND, class: PCWSTR, text: &str, x: i32, y: i32, w:
         y,
         w,
         h,
-        hwnd,
+        Some(hwnd),
         None,
         None,
         None,
@@ -442,14 +442,15 @@ unsafe fn create_radio(
         y,
         w,
         h,
-        hwnd,
-        HMENU(id as _),
+        Some(hwnd),
+        Some(HMENU(id as _)),
         None,
         None,
-    );
+    )
+    .unwrap_or_default();
 
-    if ctrl.0 != 0 && checked {
-        SendMessageW(ctrl, BM_SETCHECK, WPARAM(BST_CHECKED_VAL), LPARAM(0));
+    if !ctrl.0.is_null() && checked {
+        SendMessageW(ctrl, BM_SETCHECK, Some(WPARAM(BST_CHECKED_VAL)), Some(LPARAM(0)));
     }
 }
 
@@ -476,21 +477,23 @@ unsafe fn create_checkbox(
         y,
         w,
         h,
-        hwnd,
-        HMENU(id as _),
+        Some(hwnd),
+        Some(HMENU(id as _)),
         None,
         None,
-    );
+    )
+    .unwrap_or_default();
 
-    if ctrl.0 != 0 && checked {
-        SendMessageW(ctrl, BM_SETCHECK, WPARAM(BST_CHECKED_VAL), LPARAM(0));
+    if !ctrl.0.is_null() && checked {
+        SendMessageW(ctrl, BM_SETCHECK, Some(WPARAM(BST_CHECKED_VAL)), Some(LPARAM(0)));
     }
 }
 
 unsafe fn is_checked(hwnd: HWND, id: i32) -> bool {
-    let ctrl = GetDlgItem(hwnd, id);
-    if ctrl.0 != 0 {
-        SendMessageW(ctrl, BM_GETCHECK, WPARAM(0), LPARAM(0)).0 == BST_CHECKED_VAL as isize
+    let ctrl = GetDlgItem(Some(hwnd), id).unwrap_or_default();
+    if !ctrl.0.is_null() {
+        SendMessageW(ctrl, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0
+            == BST_CHECKED_VAL as isize
     } else {
         false
     }
@@ -552,11 +555,11 @@ unsafe extern "system" fn settings_wndproc(
         WM_LBUTTONDOWN => {
             // Allow dragging the borderless window by its client area.
             let _ = ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as _), LPARAM(0));
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as _)), Some(LPARAM(0)));
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-            let ctrl_id = GetDlgCtrlID(HWND(lparam.0));
+            let ctrl_id = GetDlgCtrlID(HWND(lparam.0 as *mut _));
             let hdc = HDC(wparam.0 as _);
 
             if ctrl_id == ID_CLOSE_BTN {
@@ -597,18 +600,18 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_HSCROLL => {
             if lparam.0 != 0 {
-                let ctrl_hwnd = HWND(lparam.0);
+                let ctrl_hwnd = HWND(lparam.0 as *mut _);
                 let ctrl_id = GetDlgCtrlID(ctrl_hwnd);
 
                 if ctrl_id == ID_OPACITY_SLIDER {
-                    let pos = SendMessageW(ctrl_hwnd, TBM_GETPOS, WPARAM(0), LPARAM(0)).0;
+                    let pos = SendMessageW(ctrl_hwnd, TBM_GETPOS, Some(WPARAM(0)), Some(LPARAM(0))).0;
 
                     let val_str = format!("{}%", pos);
                     let val_wide: Vec<u16> =
                         val_str.encode_utf16().chain(std::iter::once(0)).collect();
 
-                    let label_hwnd = GetDlgItem(hwnd, ID_OPACITY_VAL);
-                    if label_hwnd.0 != 0 {
+                    let label_hwnd = GetDlgItem(Some(hwnd), ID_OPACITY_VAL).unwrap_or_default();
+                    if !label_hwnd.0.is_null() {
                         let _ = SetWindowTextW(label_hwnd, PCWSTR(val_wide.as_ptr()));
                     }
                 }
@@ -635,24 +638,25 @@ unsafe fn create_trackbar(hwnd: HWND, id: i32, x: i32, y: i32, w: i32, h: i32, v
         y,
         w,
         h,
-        hwnd,
-        HMENU(id as _),
+        Some(hwnd),
+        Some(HMENU(id as _)),
         None,
         None,
-    );
+    )
+    .unwrap_or_default();
 
-    if ctrl.0 != 0 {
+    if !ctrl.0.is_null() {
         // Range 40-100
-        SendMessageW(ctrl, TBM_SETRANGEMIN, WPARAM(1), LPARAM(40));
-        SendMessageW(ctrl, TBM_SETRANGEMAX, WPARAM(1), LPARAM(100));
-        SendMessageW(ctrl, TBM_SETPOS, WPARAM(1), LPARAM(value as isize));
+        SendMessageW(ctrl, TBM_SETRANGEMIN, Some(WPARAM(1)), Some(LPARAM(40)));
+        SendMessageW(ctrl, TBM_SETRANGEMAX, Some(WPARAM(1)), Some(LPARAM(100)));
+        SendMessageW(ctrl, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(value as isize)));
     }
 }
 
 unsafe fn get_trackbar_pos(hwnd: HWND, id: i32) -> u8 {
-    let ctrl = GetDlgItem(hwnd, id);
-    if ctrl.0 != 0 {
-        let val = SendMessageW(ctrl, TBM_GETPOS, WPARAM(0), LPARAM(0)).0;
+    let ctrl = GetDlgItem(Some(hwnd), id).unwrap_or_default();
+    if !ctrl.0.is_null() {
+        let val = SendMessageW(ctrl, TBM_GETPOS, Some(WPARAM(0)), Some(LPARAM(0))).0;
         val as u8
     } else {
         100 // default

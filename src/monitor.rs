@@ -1,14 +1,14 @@
 use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
-    PDH_FMT_DOUBLE,
+    PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
 };
 
 pub struct SystemMonitor {
     cpu_usage: f32,
     gpu_usage: f32,
-    pdh_query: isize,
-    cpu_counter: isize,
-    gpu_counter: isize,
+    pdh_query: PDH_HQUERY,
+    cpu_counter: PDH_HCOUNTER,
+    gpu_counter: PDH_HCOUNTER,
     counter_buffer: Vec<u8>,
 }
 
@@ -20,20 +20,20 @@ impl SystemMonitor {
         Self {
             cpu_usage: 0.0,
             gpu_usage: 0.0,
-            pdh_query: 0,
-            cpu_counter: 0,
-            gpu_counter: 0,
+            pdh_query: PDH_HQUERY::default(),
+            cpu_counter: PDH_HCOUNTER::default(),
+            gpu_counter: PDH_HCOUNTER::default(),
             counter_buffer: Vec::new(),
         }
     }
 
     fn ensure_initialized(&mut self) -> bool {
-        if self.pdh_query != 0 {
+        if !self.pdh_query.is_invalid() {
             return true;
         }
 
         unsafe {
-            let mut pdh_query = 0;
+            let mut pdh_query = PDH_HQUERY::default();
             if PdhOpenQueryW(None, 0, &mut pdh_query) != 0 {
                 return false;
             }
@@ -65,14 +65,14 @@ impl SystemMonitor {
     }
 
     fn cleanup(&mut self) {
-        if self.pdh_query != 0 {
+        if !self.pdh_query.is_invalid() {
             unsafe {
                 use windows::Win32::System::Performance::PdhCloseQuery;
                 let _ = PdhCloseQuery(self.pdh_query);
             }
-            self.pdh_query = 0;
-            self.cpu_counter = 0;
-            self.gpu_counter = 0;
+            self.pdh_query = PDH_HQUERY::default();
+            self.cpu_counter = PDH_HCOUNTER::default();
+            self.gpu_counter = PDH_HCOUNTER::default();
             // Free the buffer memory
             self.counter_buffer = Vec::new();
             self.counter_buffer.shrink_to_fit();
@@ -93,7 +93,7 @@ impl SystemMonitor {
             return;
         }
 
-        if self.pdh_query != 0 {
+        if !self.pdh_query.is_invalid() {
             unsafe {
                 if PdhCollectQueryData(self.pdh_query) == 0 {
                     // Update CPU

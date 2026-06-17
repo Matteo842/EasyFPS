@@ -7,7 +7,7 @@ description = "A simple, lightweight FPS counter for fullscreen games"
 
 [dependencies]
 # Windows API
-windows = { version = "0.52", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",

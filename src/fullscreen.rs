@@ -76,7 +76,7 @@ pub struct FullscreenApp {
 pub fn get_fullscreen_app() -> Option<FullscreenApp> {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.0 == 0 {
+        if hwnd.0.is_null() {
             return None;
         }
 
@@ -264,26 +264,26 @@ mod tests {
     #[test]
     fn exact_match_is_fullscreen() {
         let r = rect(1920, 1080);
-        assert!(is_window_fullscreen(HWND(0), &r, 1920, 1080, 0));
+        assert!(is_window_fullscreen(HWND(std::ptr::null_mut()), &r, 1920, 1080, 0));
     }
 
     #[test]
     fn within_margin_is_fullscreen() {
         // A few pixels off (borderless quirks) should still count.
         let r = rect(1920 - 10, 1080 - 5);
-        assert!(is_window_fullscreen(HWND(0), &r, 1920, 1080, 0));
+        assert!(is_window_fullscreen(HWND(std::ptr::null_mut()), &r, 1920, 1080, 0));
     }
 
     #[test]
     fn larger_than_screen_is_fullscreen() {
         // DSR/VSR can render above native resolution.
         let r = rect(2560, 1440);
-        assert!(is_window_fullscreen(HWND(0), &r, 1920, 1080, 0));
+        assert!(is_window_fullscreen(HWND(std::ptr::null_mut()), &r, 1920, 1080, 0));
     }
 
     #[test]
     fn small_window_is_not_fullscreen() {
         let r = rect(800, 600);
-        assert!(!is_window_fullscreen(HWND(0), &r, 1920, 1080, 0));
+        assert!(!is_window_fullscreen(HWND(std::ptr::null_mut()), &r, 1920, 1080, 0));
     }
 }

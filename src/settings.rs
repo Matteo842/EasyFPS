@@ -150,7 +150,8 @@ impl Settings {
 
         unsafe {
             let mut hkey = HKEY::default();
-            RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_SET_VALUE, &mut hkey)
+            RegOpenKeyExW(HKEY_CURRENT_USER, subkey, None, KEY_SET_VALUE, &mut hkey)
+                .ok()
                 .map_err(|e| format!("Failed to open Run key: {}", e))?;
 
             let result = if self.start_with_windows {
@@ -164,7 +165,8 @@ impl Settings {
                     wide.as_ptr() as *const u8,
                     wide.len() * std::mem::size_of::<u16>(),
                 );
-                RegSetValueExW(hkey, value_name, 0, REG_SZ, Some(bytes))
+                RegSetValueExW(hkey, value_name, None, REG_SZ, Some(bytes))
+                    .ok()
                     .map_err(|e| format!("Failed to set Run value: {}", e))
             } else {
                 // Removing a value that does not exist is not an error for us.
