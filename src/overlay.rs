@@ -259,29 +259,22 @@ fn calculate_dimensions(data: &OverlayData) -> (i32, i32) {
     let char_w = (font_large as f32 * 0.6) as i32;
     let h_pad = 12; // 6px left + 6px right
 
-    // FPS line: "FPS  " + up to 4-digit number → ~8 chars
-    let fps_digits = if data.current_fps >= 1000.0 {
+    // Fixed at 3 digits minimum so the overlay width does not jitter
+    // when FPS fluctuates between 2 and 3 digits (e.g. 90-110 FPS).
+    let fps_digits = if data.current_fps.round() >= 1000.0 {
         4
-    } else if data.current_fps >= 100.0 {
-        3
-    } else if data.current_fps >= 10.0 {
-        2
     } else {
-        1
+        3
     };
     let fps_w = h_pad + char_w * (4 + fps_digits); // "FPS " + space + digits
 
     let mut max_width = fps_w;
 
     if data.show_1_percent_low {
-        let low_digits = if data.one_percent_low >= 1000.0 {
+        let low_digits = if data.one_percent_low.round() >= 1000.0 {
             4
-        } else if data.one_percent_low >= 100.0 {
-            3
-        } else if data.one_percent_low >= 10.0 {
-            2
         } else {
-            1
+            3
         };
         let w = h_pad + char_w * (3 + low_digits); // "1% " + digits
         max_width = max_width.max(w);
@@ -480,8 +473,13 @@ fn run_overlay_window() -> Result<(), String> {
 
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
-        SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), 230, LWA_ALPHA)
-            .map_err(|e| format!("SetLayeredWindowAttributes failed: {}", e))?;
+        SetLayeredWindowAttributes(
+            hwnd,
+            windows::Win32::Foundation::COLORREF(0),
+            230,
+            LWA_ALPHA,
+        )
+        .map_err(|e| format!("SetLayeredWindowAttributes failed: {}", e))?;
 
         // Block on the message queue. The overlay only repaints when the main
         // thread calls InvalidateRect/SetWindowPos, which wake this loop, so
@@ -508,8 +506,98 @@ pub fn shutdown() {
     let hwnd_val = OVERLAY_HWND.load(Ordering::SeqCst);
     if hwnd_val != 0 {
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(hwnd_val as *mut _));
+            let _ =
+                windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(hwnd_val as *mut _));
         }
         OVERLAY_HWND.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_data(fps: f64, low: f64, size: OverlaySize) -> OverlayData {
+        OverlayData {
+            current_fps: fps,
+            one_percent_low: low,
+            cpu_usage: 0.0,
+            gpu_usage: 0.0,
+            position: OverlayPosition::TopRight,
+            fps_color: FpsColor::White,
+            size,
+            show_1_percent_low: true,
+            show_cpu_usage: false,
+            show_gpu_usage: false,
+            overlay_opacity: 90,
+            monitor: MonitorBounds {
+                left: 0,
+                top: 0,
+                width: 1920,
+                height: 1080,
+            },
+        }
+    }
+
+    #[test]
+    fn fps_fluctuation_under_1000_does_not_change_width() {
+        let mut data = make_test_data(60.0, 45.0, OverlaySize::Medium);
+        let (w_60, h_60) = calculate_dimensions(&data);
+
+        data.current_fps = 99.0;
+        data.one_percent_low = 85.0;
+        let (w_99, _) = calculate_dimensions(&data);
+
+        data.current_fps = 100.0;
+        data.one_percent_low = 95.0;
+        let (w_100, _) = calculate_dimensions(&data);
+
+        data.current_fps = 144.0;
+        data.one_percent_low = 105.0;
+        let (w_144, _) = calculate_dimensions(&data);
+
+        data.current_fps = 5.0;
+        data.one_percent_low = 2.0;
+        let (w_5, _) = calculate_dimensions(&data);
+
+        data.current_fps = 999.0;
+        data.one_percent_low = 950.0;
+        let (w_999, _) = calculate_dimensions(&data);
+
+        // Width must be identical across all values from 0 to 999 FPS
+        assert_eq!(w_60, w_99);
+        assert_eq!(w_99, w_100);
+        assert_eq!(w_100, w_144);
+        assert_eq!(w_144, w_5);
+        assert_eq!(w_5, w_999);
+
+        assert_eq!(h_60, calculate_dimensions(&data).1);
+    }
+
+    #[test]
+    fn fps_above_1000_expands_width() {
+        let data_999 = make_test_data(999.0, 500.0, OverlaySize::Medium);
+        let (w_999, _) = calculate_dimensions(&data_999);
+
+        let data_1000 = make_test_data(1000.0, 500.0, OverlaySize::Medium);
+        let (w_1000, _) = calculate_dimensions(&data_1000);
+
+        assert!(w_1000 > w_999);
+    }
+
+    #[test]
+    fn sizes_scale_dimensions() {
+        let data_s = make_test_data(100.0, 90.0, OverlaySize::Small);
+        let data_m = make_test_data(100.0, 90.0, OverlaySize::Medium);
+        let data_l = make_test_data(100.0, 90.0, OverlaySize::Large);
+
+        let (w_s, h_s) = calculate_dimensions(&data_s);
+        let (w_m, h_m) = calculate_dimensions(&data_m);
+        let (w_l, h_l) = calculate_dimensions(&data_l);
+
+        assert!(w_s < w_m);
+        assert!(w_m < w_l);
+        assert!(h_s < h_m);
+        assert!(h_m < h_l);
     }
 }
